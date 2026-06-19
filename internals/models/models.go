@@ -1,6 +1,8 @@
 package models
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 )
 
@@ -18,18 +20,14 @@ type Identity struct {
 	Version           string `gorm:"not null"`
 }
 
-func (Identity) TableName() string { return "ekilied_identity" }
-
 type Capability struct {
 	gorm.Model
 	AgentID     string `gorm:"index"`
 	Name        string `gorm:"not null"`
 	Version     string
-	Available   bool   `gorm:"not null"`
+	Available   bool `gorm:"not null"`
 	LastChecked int64
 }
-
-func (Capability) TableName() string { return "ekilied_capabilities" }
 
 type PendingJob struct {
 	gorm.Model
@@ -45,8 +43,6 @@ type PendingJob struct {
 	DeployLockID string `gorm:"index"`
 }
 
-func (PendingJob) TableName() string { return "ekilied_pending_jobs" }
-
 type CompletedJob struct {
 	gorm.Model
 	JobID       uint   `gorm:"uniqueIndex;not null"`
@@ -58,8 +54,6 @@ type CompletedJob struct {
 	StartedAt   int64
 	CompletedAt int64
 }
-
-func (CompletedJob) TableName() string { return "ekilied_completed_jobs" }
 
 type SiteCache struct {
 	gorm.Model
@@ -74,12 +68,23 @@ type SiteCache struct {
 	EnvHash       string
 }
 
-func (SiteCache) TableName() string { return "ekilied_site_cache" }
-
 type Setting struct {
 	gorm.Model
 	Key   string `gorm:"uniqueIndex;not null"`
 	Value string `gorm:"type:text;not null"`
 }
 
-func (Setting) TableName() string { return "ekilied_settings" }
+// AllModels returns all models for AutoMigrate.
+func AllModels() []any {
+	return []any{
+		&Identity{},
+		&Capability{},
+		&PendingJob{},
+		&CompletedJob{},
+		&SiteCache{},
+		&Setting{},
+	}
+}
+
+// Ensure time import is used (referenced by gorm.Model)
+var _ = time.Time{}

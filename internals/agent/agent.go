@@ -9,7 +9,6 @@ import (
 
 	"github.com/ekilie/ekilied/internals/config"
 	"github.com/ekilie/ekilied/internals/models"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -22,23 +21,20 @@ type Ekilied struct {
 	wg     sync.WaitGroup
 }
 
-func New(cfg *config.Config) (*Ekilied, error) {
-	db, err := gorm.Open(sqlite.Open(cfg.DataDir+"/agent.db"), &gorm.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
-	}
-	if err := db.AutoMigrate(
-		&models.Identity{}, &models.Capability{}, &models.PendingJob{},
-		&models.CompletedJob{}, &models.SiteCache{}, &models.Setting{},
-	); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
+func New(cfg *config.Config, db *gorm.DB) (*Ekilied, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Ekilied{cfg: cfg, db: db, ws: NewWSClient(cfg), ctx: ctx, cancel: cancel}, nil
+	return &Ekilied{
+		cfg:    cfg,
+		db:     db,
+		ws:     NewWSClient(cfg),
+		ctx:    ctx,
+		cancel: cancel,
+	}, nil
 }
 
 func (e *Ekilied) Start() error {
 	log.Println("ekilied starting...")
+
 	if e.cfg.NeedsRegistration() {
 		log.Println("performing registration handshake...")
 		sessionToken, err := e.ws.Register(e.ctx)
@@ -46,12 +42,28 @@ func (e *Ekilied) Start() error {
 			return fmt.Errorf("registration failed: %w", err)
 		}
 		e.cfg.SessionToken = sessionToken
-		log.Println("registration successful")
+
+		// Persist identity to local SQLite
+		e.db.Model(&models.Identity{}).Where("1 = 1").Delete(&models.Identity{})
+		e.db.Create(&models.Identity{
+			AgentID:      fmt.Sprintf("agt_%d", e.cfg.ServerID),
+			ServerID:     e.cfg.ServerID,
+			SessionToken: sessionToken,
+			APIURL:       e.cfg.APIURL,
+			WsURL:        e.cfg.WsURL,
+			PollInterval: e.cfg.PollInterval,
+			Connected:    true,
+			Version:      "1.0.0",
+		})
+		log.Println("registration successful, identity persisted")
 	}
-	e.wg.Add(1)
-	go func() { defer e.wg.Done(); e.ws.Connect(e.ctx) }()
+
 	e.wg.Add(1)
 	go func() { defer e.wg.Done(); e.heartbeatLoop() }()
+
+	e.wg.Add(1)
+	go func() { defer e.wg.Done(); e.ws.Connect(e.ctx) }()
+
 	log.Println("ekilied running")
 	return nil
 }
@@ -64,7 +76,7 @@ func (e *Ekilied) Stop() {
 }
 
 func (e *Ekilied) heartbeatLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(time.Duration(e.cfg.HeartbeatInterval) * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
