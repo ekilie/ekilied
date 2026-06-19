@@ -48,7 +48,7 @@ func WithFlags(overrides FlagOverrides) ConfigOption {
 		if overrides.DataDir != "" {
 			cfg.DataDir = overrides.DataDir
 			if overrides.DBPath == "" {
-				cfg.DBPath = cfg.DataDir + "/agent.db"
+				cfg.DBPath = cfg.DataDir + "/ekilied.db"
 			}
 		}
 		if overrides.LogLevel != "" {
