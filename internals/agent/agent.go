@@ -85,8 +85,7 @@ func (e *Ekilied) Start() error {
 
 	e.wg.Go(func() { ; e.ws.Connect(e.ctx) })
 
-	e.wg.Add(1)
-	go func() { defer e.wg.Done(); e.httpPollLoop() }()
+	e.wg.Go(func() { ; e.httpPollLoop() })
 
 	log.Println("ekilied running")
 	return nil
