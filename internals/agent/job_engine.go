@@ -70,7 +70,7 @@ func NewLogBatcher(ctx context.Context, jobID uint, client *WSClient) *LogBatche
 func (lb *LogBatcher) Write(p []byte) (int, error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	for _, line := range strings.Split(string(p), "\n") {
+	for line := range strings.SplitSeq(string(p), "\n") {
 		if line == "" {
 			continue
 		}
