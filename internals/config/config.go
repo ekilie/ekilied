@@ -94,8 +94,8 @@ func (c *Config) HasSession() bool {
 
 func yamlUnmarshal(data []byte, cfg *Config) error {
 	// Minimal YAML parser for config — we do this manually to avoid
-	// adding a yaml dependency. The agent.yml is simple key-value.
-	for _, line := range strings.Split(string(data), "\n") {
+	// adding a yaml dependency bloat. The agent.yml is simple key-value.
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

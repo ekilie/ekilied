@@ -50,7 +50,7 @@ type JobItem struct {
 	ID         uint                   `json:"id"`
 	Type       string                 `json:"type"`
 	Action     string                 `json:"action"`
-	Params     map[string]interface{} `json:"params"`
+	Params     map[string]any `json:"params"`
 	MaxRetries int                    `json:"max_retries"`
 	Timeout    int                    `json:"timeout"`
 }
@@ -73,7 +73,7 @@ type LogLine struct {
 
 type CompleteJobRequest struct {
 	Status string      `json:"status"`
-	Result interface{} `json:"result,omitempty"`
+	Result any `json:"result,omitempty"`
 	Error  string      `json:"error,omitempty"`
 	Step   string      `json:"step,omitempty"`
 }
