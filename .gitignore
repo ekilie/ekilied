@@ -1,0 +1,26 @@
+# Binaries
+ekilied
+ekilied-*
+
+# Build
+/build
+/dist
+/out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Env
+.env
+
+# Dependencies
+/vendor/
+
+# Temp
+/tmp/
+*.log
