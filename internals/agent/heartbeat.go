@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/ekilie/ekilied/internals/dtos"
 	"github.com/ekilie/ekilied/internals/models"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -13,15 +14,7 @@ import (
 
 var startTime = time.Now()
 
-type HeartbeatMetrics struct {
-	CPUPercent    float64 `json:"cpu_percent"`
-	MemoryPercent float64 `json:"memory_percent"`
-	DiskPercent   float64 `json:"disk_percent"`
-	UptimeSeconds int64   `json:"uptime_seconds"`
-	AgentVersion  string  `json:"agent_version"`
-}
-
-func collectMetrics() HeartbeatMetrics {
+func collectMetrics() dtos.HeartbeatMetrics {
 	cpuP, _ := cpu.Percent(0, false)
 	memV, _ := mem.VirtualMemory()
 	diskV, _ := disk.Usage("/")
@@ -39,7 +32,7 @@ func collectMetrics() HeartbeatMetrics {
 		diskVal = diskV.UsedPercent
 	}
 
-	return HeartbeatMetrics{
+	return dtos.HeartbeatMetrics{
 		CPUPercent:    cpuVal,
 		MemoryPercent: memVal,
 		DiskPercent:   diskVal,

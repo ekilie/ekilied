@@ -32,30 +32,43 @@ func New(cfg *config.Config, db *gorm.DB) (*Ekilied, error) {
 	}, nil
 }
 
+// Register performs the one-time registration handshake and returns
+// the session token and agent ID. Does not persist anything.
+func (e *Ekilied) Register() (sessionToken, agentID string, err error) {
+	return e.ws.Register(e.ctx)
+}
+
+// RegisterAndSave performs registration and persists identity to SQLite.
+func (e *Ekilied) RegisterAndSave() error {
+	sessionToken, agentID, err := e.ws.Register(e.ctx)
+	if err != nil {
+		return fmt.Errorf("registration failed: %w", err)
+	}
+	e.cfg.SessionToken = sessionToken
+	e.cfg.AgentID = agentID
+
+	e.db.Where("1 = 1").Delete(&models.Identity{})
+	e.db.Create(&models.Identity{
+		AgentID:      agentID,
+		ServerID:     e.cfg.ServerID,
+		SessionToken: sessionToken,
+		APIURL:       e.cfg.APIURL,
+		WsURL:        e.cfg.WsURL,
+		PollInterval: e.cfg.PollInterval,
+		Connected:    true,
+		Version:      "1.0.0",
+	})
+	log.Printf("identity persisted: agent_id=%s", agentID)
+	return nil
+}
+
 func (e *Ekilied) Start() error {
 	log.Println("ekilied starting...")
 
 	if e.cfg.NeedsRegistration() {
-		log.Println("performing registration handshake...")
-		sessionToken, err := e.ws.Register(e.ctx)
-		if err != nil {
-			return fmt.Errorf("registration failed: %w", err)
+		if err := e.RegisterAndSave(); err != nil {
+			return err
 		}
-		e.cfg.SessionToken = sessionToken
-
-		// Persist identity to local SQLite
-		e.db.Model(&models.Identity{}).Where("1 = 1").Delete(&models.Identity{})
-		e.db.Create(&models.Identity{
-			AgentID:      fmt.Sprintf("agt_%d", e.cfg.ServerID),
-			ServerID:     e.cfg.ServerID,
-			SessionToken: sessionToken,
-			APIURL:       e.cfg.APIURL,
-			WsURL:        e.cfg.WsURL,
-			PollInterval: e.cfg.PollInterval,
-			Connected:    true,
-			Version:      "1.0.0",
-		})
-		log.Println("registration successful, identity persisted")
 	}
 
 	e.wg.Add(1)
