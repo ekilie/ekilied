@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -16,6 +18,7 @@ type Ekilied struct {
 	cfg    *config.Config
 	db     *gorm.DB
 	ws     *WSClient
+	engine *JobEngine
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -23,22 +26,27 @@ type Ekilied struct {
 
 func New(cfg *config.Config, db *gorm.DB) (*Ekilied, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Ekilied{
+
+	e := &Ekilied{
 		cfg:    cfg,
 		db:     db,
-		ws:     NewWSClient(cfg),
 		ctx:    ctx,
 		cancel: cancel,
-	}, nil
+	}
+
+	// WS client with job handler callback
+	e.ws = NewWSClient(cfg, func(jobCtx context.Context, jobID uint, action string, params json.RawMessage) {
+		e.engine.Execute(jobCtx, jobID, action, params)
+	})
+	e.engine = NewJobEngine(e.ws)
+
+	return e, nil
 }
 
-// Register performs the one-time registration handshake and returns
-// the session token and agent ID. Does not persist anything.
 func (e *Ekilied) Register() (sessionToken, agentID string, err error) {
 	return e.ws.Register(e.ctx)
 }
 
-// RegisterAndSave performs registration and persists identity to SQLite.
 func (e *Ekilied) RegisterAndSave() error {
 	sessionToken, agentID, err := e.ws.Register(e.ctx)
 	if err != nil {
@@ -71,11 +79,14 @@ func (e *Ekilied) Start() error {
 		}
 	}
 
-	e.wg.Add(1)
-	go func() { defer e.wg.Done(); e.heartbeatLoop() }()
+	e.detectCapabilities()
+
+	e.wg.Go(func() { ; e.heartbeatLoop() })
+
+	e.wg.Go(func() { ; e.ws.Connect(e.ctx) })
 
 	e.wg.Add(1)
-	go func() { defer e.wg.Done(); e.ws.Connect(e.ctx) }()
+	go func() { defer e.wg.Done(); e.httpPollLoop() }()
 
 	log.Println("ekilied running")
 	return nil
@@ -85,6 +96,7 @@ func (e *Ekilied) Stop() {
 	log.Println("stopping ekilied...")
 	e.cancel()
 	e.wg.Wait()
+	e.db.Model(&models.Identity{}).Where("1 = 1").Update("connected", false)
 	log.Println("ekilied stopped")
 }
 
@@ -101,4 +113,56 @@ func (e *Ekilied) heartbeatLoop() {
 			}
 		}
 	}
+}
+
+func (e *Ekilied) httpPollLoop() {
+	pollTicker := time.NewTicker(time.Duration(e.cfg.PollInterval) * time.Second)
+	defer pollTicker.Stop()
+
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-pollTicker.C:
+			jobs, err := e.ws.PollJobs(e.ctx)
+			if err != nil {
+				continue
+			}
+			for _, job := range jobs {
+				raw, _ := json.Marshal(job.Params)
+				log.Printf("polled job: id=%d action=%s", job.ID, job.Action)
+				go e.engine.Execute(e.ctx, job.ID, job.Action, raw)
+			}
+		}
+	}
+}
+
+func (e *Ekilied) detectCapabilities() {
+	log.Println("detecting capabilities...")
+	caps := []models.Capability{
+		{Name: "nginx", Available: commandExists("nginx", "-v")},
+		{Name: "node", Available: commandExists("node", "--version")},
+		{Name: "npm", Available: commandExists("npm", "--version")},
+		{Name: "docker", Available: commandExists("docker", "--version")},
+		{Name: "certbot", Available: commandExists("certbot", "--version")},
+		{Name: "git", Available: commandExists("git", "--version")},
+		{Name: "systemd", Available: commandExists("systemctl", "--version")},
+		{Name: "php", Available: commandExists("php", "--version")},
+		{Name: "composer", Available: commandExists("composer", "--version")},
+	}
+
+	for _, cap := range caps {
+		e.db.Where("name = ?", cap.Name).Delete(&models.Capability{})
+		e.db.Create(&cap)
+		if cap.Available {
+			log.Printf("  ✓ %s", cap.Name)
+		} else {
+			log.Printf("  ✗ %s", cap.Name)
+		}
+	}
+}
+
+func commandExists(name string, args ...string) bool {
+	cmd := exec.Command(name, args...)
+	return cmd.Run() == nil
 }

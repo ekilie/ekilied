@@ -9,18 +9,34 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/ekilie/ekilied/internals/config"
 	"github.com/ekilie/ekilied/internals/dtos"
 )
 
+type JobHandler func(ctx context.Context, jobID uint, action string, params json.RawMessage)
+
 type WSClient struct {
-	cfg    *config.Config
-	client *http.Client
+	cfg        *config.Config
+	client     *http.Client
+	conn       *websocket.Conn
+	egress     chan []byte
+	onJob      JobHandler
 }
 
-func NewWSClient(cfg *config.Config) *WSClient {
-	return &WSClient{cfg: cfg, client: &http.Client{Timeout: 30 * time.Second}}
+func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
+	if onJob == nil {
+		onJob = func(ctx context.Context, jobID uint, action string, params json.RawMessage) {}
+	}
+	return &WSClient{
+		cfg:    cfg,
+		client: &http.Client{Timeout: 30 * time.Second},
+		egress: make(chan []byte, 64),
+		onJob:  onJob,
+	}
 }
+
+// ── Registration (always HTTP) ───────────────────────────────────────────
 
 func (c *WSClient) Register(ctx context.Context) (sessionToken, agentID string, err error) {
 	reqBody, _ := json.Marshal(dtos.RegisterRequest{
@@ -37,7 +53,7 @@ func (c *WSClient) Register(ctx context.Context) (sessionToken, agentID string, 
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("register request: %w", err)
+		return "", "", fmt.Errorf("register: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -47,7 +63,7 @@ func (c *WSClient) Register(ctx context.Context) (sessionToken, agentID string, 
 
 	var result dtos.RegisterResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", fmt.Errorf("decode response: %w", err)
+		return "", "", fmt.Errorf("decode: %w", err)
 	}
 
 	if result.WsURL != "" {
@@ -61,18 +77,132 @@ func (c *WSClient) Register(ctx context.Context) (sessionToken, agentID string, 
 	return result.SessionToken, result.AgentID, nil
 }
 
+// ── WebSocket connect loop (primary) ─────────────────────────────────────
+
+func (c *WSClient) Connect(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		if err := c.connectOnce(ctx); err != nil {
+			log.Printf("ws disconnected: %v — retrying in 5s", err)
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
+func (c *WSClient) connectOnce(ctx context.Context) error {
+	url := c.cfg.WsURL + "?token=" + c.cfg.SessionToken
+
+	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"User-Agent": []string{"ekilied/1.0"},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+
+	c.conn = conn
+	log.Println("ws connected")
+
+	// Read pump — receives messages from control plane
+	readCh := make(chan []byte, 64)
+	go func() {
+		defer close(readCh)
+		for {
+			_, msg, err := conn.Read(ctx)
+			if err != nil {
+				log.Printf("ws read error: %v", err)
+				return
+			}
+			readCh <- msg
+		}
+	}()
+
+	// Egress pump — sends heartbeats and log messages
+	go func() {
+		for msg := range c.egress {
+			if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+				log.Printf("ws write error: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Process incoming messages
+	for msg := range readCh {
+		var envelope struct {
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(msg, &envelope); err != nil {
+			log.Printf("ws unmarshal error: %v", err)
+			continue
+		}
+
+		switch envelope.Type {
+		case "job":
+			var job struct {
+				JobID  uint            `json:"job_id"`
+				Action string          `json:"action"`
+				Params json.RawMessage `json:"params"`
+			}
+			if err := json.Unmarshal(envelope.Payload, &job); err != nil {
+				log.Printf("ws job unmarshal error: %v", err)
+				continue
+			}
+			log.Printf("ws job received: id=%d action=%s", job.JobID, job.Action)
+			go c.onJob(ctx, job.JobID, job.Action, job.Params)
+
+		case "token_rotated":
+			var payload struct {
+				NewToken string `json:"new_token"`
+			}
+			json.Unmarshal(envelope.Payload, &payload)
+			if payload.NewToken != "" {
+				c.cfg.SessionToken = payload.NewToken
+				log.Println("ws token rotated")
+			}
+
+		case "job_cancelled":
+			log.Println("ws job cancelled (handling pending)")
+
+		default:
+			log.Printf("ws unknown message type: %s", envelope.Type)
+		}
+	}
+
+	return fmt.Errorf("connection closed")
+}
+
+// ── Heartbeat (prefer WS, fallback HTTP) ─────────────────────────────────
+
 func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken string, metrics dtos.HeartbeatMetrics) error {
-	reqBody, _ := json.Marshal(dtos.HeartbeatRequest{
+	payload, _ := json.Marshal(dtos.HeartbeatRequest{
 		AgentID:  agentID,
 		ServerID: c.cfg.ServerID,
 		TS:       time.Now().UTC().Format(time.RFC3339),
 		Metrics:  metrics,
 	})
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.cfg.APIURL+"/agents/heartbeat", bytes.NewReader(reqBody))
-	if err != nil {
-		return err
+	if c.conn != nil {
+		msg, _ := json.Marshal(map[string]interface{}{
+			"v": 1, "type": "heartbeat", "payload": json.RawMessage(payload),
+		})
+		select {
+		case c.egress <- msg:
+			return nil
+		default:
+			log.Println("ws egress full, falling back to http heartbeat")
+		}
 	}
+
+	// HTTP fallback
+	req, _ := http.NewRequestWithContext(ctx, "POST", c.cfg.APIURL+"/agents/heartbeat", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+sessionToken)
 
@@ -83,23 +213,20 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("heartbeat failed (HTTP %d)", resp.StatusCode)
+		return fmt.Errorf("heartbeat HTTP %d", resp.StatusCode)
 	}
 
 	var result dtos.HeartbeatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
-		if result.PendingJobsCount > 0 {
-			log.Printf("%d pending job(s) on server", result.PendingJobsCount)
-		}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.PendingJobsCount > 0 {
+		log.Printf("%d pending job(s)", result.PendingJobsCount)
 	}
 	return nil
 }
 
+// ── Job HTTP helpers (used by job engine as WS fallback) ─────────────────
+
 func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.cfg.APIURL+"/agents/jobs", nil)
-	if err != nil {
-		return nil, err
-	}
+	req, _ := http.NewRequestWithContext(ctx, "GET", c.cfg.APIURL+"/agents/jobs", nil)
 	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
 
 	resp, err := c.client.Do(req)
@@ -108,7 +235,9 @@ func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
 	}
 	defer resp.Body.Close()
 
-	var result dtos.PollJobsResponse
+	var result struct {
+		Data []dtos.JobItem `json:"data"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
@@ -116,8 +245,8 @@ func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
 }
 
 func (c *WSClient) AcceptJob(ctx context.Context, jobID uint) error {
-	url := fmt.Sprintf("%s/agents/jobs/%d/accept", c.cfg.APIURL, jobID)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, nil)
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		fmt.Sprintf("%s/agents/jobs/%d/accept", c.cfg.APIURL, jobID), nil)
 	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
 
 	resp, err := c.client.Do(req)
@@ -127,16 +256,17 @@ func (c *WSClient) AcceptJob(ctx context.Context, jobID uint) error {
 	resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("accept job failed (HTTP %d)", resp.StatusCode)
+		return fmt.Errorf("accept HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
 
 func (c *WSClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogLine) error {
-	url := fmt.Sprintf("%s/agents/jobs/%d/logs", c.cfg.APIURL, jobID)
 	body, _ := json.Marshal(dtos.StreamLogsRequest{Lines: lines})
 
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		fmt.Sprintf("%s/agents/jobs/%d/logs", c.cfg.APIURL, jobID),
+		bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
 
@@ -147,21 +277,19 @@ func (c *WSClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogL
 	resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("stream logs failed (HTTP %d)", resp.StatusCode)
+		return fmt.Errorf("logs HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
 
 func (c *WSClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg, step string, result interface{}) error {
-	url := fmt.Sprintf("%s/agents/jobs/%d/complete", c.cfg.APIURL, jobID)
 	body, _ := json.Marshal(dtos.CompleteJobRequest{
-		Status: status,
-		Error:  errorMsg,
-		Step:   step,
-		Result: result,
+		Status: status, Error: errorMsg, Step: step, Result: result,
 	})
 
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		fmt.Sprintf("%s/agents/jobs/%d/complete", c.cfg.APIURL, jobID),
+		bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
 
@@ -172,28 +300,7 @@ func (c *WSClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg
 	resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("complete job failed (HTTP %d)", resp.StatusCode)
+		return fmt.Errorf("complete HTTP %d", resp.StatusCode)
 	}
 	return nil
-}
-
-func (c *WSClient) Connect(ctx context.Context) {
-	log.Println("WebSocket connection loop starting (polling fallback active)")
-	ticker := time.NewTicker(time.Duration(c.cfg.PollInterval) * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			jobs, err := c.PollJobs(ctx)
-			if err != nil {
-				log.Printf("poll jobs failed: %v", err)
-				continue
-			}
-			for _, job := range jobs {
-				log.Printf("received job: id=%d action=%s", job.ID, job.Action)
-			}
-		}
-	}
 }
