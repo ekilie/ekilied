@@ -3,6 +3,7 @@ module github.com/ekilie/ekilied
 go 1.25.0
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/joho/godotenv v1.5.1
 	github.com/shirou/gopsutil/v3 v3.24.5
 	gorm.io/driver/sqlite v1.5.6
@@ -10,7 +11,6 @@ require (
 )
 
 require (
-	github.com/coder/websocket v1.8.15 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
