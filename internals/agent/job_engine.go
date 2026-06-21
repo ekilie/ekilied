@@ -161,7 +161,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		return
 	}
 
-	var params map[string]interface{}
+	var params map[string]any
 	json.Unmarshal(rawParams, &params)
 
 	siteName, _ := params["site_name"].(string)
@@ -169,7 +169,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	lb := NewLogBatcher(ctx, jobID, e.client)
 	defer lb.Close()
 
-	writeLog := func(format string, args ...interface{}) {
+	writeLog := func(format string, args ...any) {
 		lb.mu.Lock()
 		lb.lines = append(lb.lines, dtos.LogLine{
 			Stream: "stdout",
@@ -318,7 +318,7 @@ func cloneRepo(repoDir, repoURL, branch, gitToken, commitSHA string, lb *LogBatc
 		return cmd.Run()
 	}
 
-	// Already cloned — fetch and checkout
+	// Already cloned fetch and checkout
 	cmd := exec.Command("git", "fetch", "--depth=1", "origin", branch)
 	cmd.Dir = repoDir
 	cmd.Stdout = lb
@@ -394,15 +394,21 @@ func issueSSL(domain, email string) error {
 }
 
 func addSSHKey(publicKey string) error {
-	sshDir := "/root/.ssh"
-	run("mkdir", "-p", sshDir)
-	run("chmod", "0700", sshDir)
-
-	f, err := exec.Command("bash", "-c", fmt.Sprintf("cat >> %s/authorized_keys", sshDir)).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("add ssh key: %s", string(f))
+	if publicKey == "" {
+		return fmt.Errorf("public key is required")
 	}
-	_ = f
+	sshDir := "/root/.ssh"
+	os.MkdirAll(sshDir, 0700)
+
+	f, err := os.OpenFile(sshDir+"/authorized_keys", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("open authorized_keys: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(publicKey + "\n"); err != nil {
+		return fmt.Errorf("write key: %w", err)
+	}
 	return nil
 }
 

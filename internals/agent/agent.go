@@ -43,6 +43,10 @@ func New(cfg *config.Config, db *gorm.DB) (*Ekilied, error) {
 	return e, nil
 }
 
+func (e *Ekilied) Config() *config.Config {
+	return e.cfg
+}
+
 func (e *Ekilied) Register() (sessionToken, agentID string, err error) {
 	return e.ws.Register(e.ctx)
 }
