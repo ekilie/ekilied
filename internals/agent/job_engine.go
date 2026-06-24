@@ -263,7 +263,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	}
 }
 
-func (e *JobEngine) runDeployScript(siteName string, params map[string]interface{}, lb *LogBatcher, logf func(string, ...interface{})) error {
+func (e *JobEngine) runDeployScript(siteName string, params map[string]any, lb *LogBatcher, logf func(string, ...any)) error {
 	if !e.deployLk.TryAcquire(siteName, 0) {
 		return fmt.Errorf("deploy already in progress for site: %s", siteName)
 	}
@@ -387,11 +387,11 @@ func writeNginxConfig(siteName, config string) error {
 	return run("systemctl", "reload", "nginx")
 }
 
-func writeEnvFile(siteName string, params map[string]interface{}) error {
+func writeEnvFile(siteName string, params map[string]any) error {
 	envDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
 	envPath := envDir + "/.env"
 
-	env, _ := params["env"].(map[string]interface{})
+	env, _ := params["env"].(map[string]any)
 	if len(env) == 0 {
 		return nil
 	}
@@ -449,7 +449,7 @@ func daemonProgramName(siteName, name string) string {
 	return fmt.Sprintf("%s-%s", siteName, name)
 }
 
-func createSupervisorConfig(siteName, name, command string, scale int, params map[string]interface{}) error {
+func createSupervisorConfig(siteName, name, command string, scale int, params map[string]any) error {
 	if command == "" {
 		return fmt.Errorf("command is required")
 	}
@@ -464,7 +464,7 @@ func createSupervisorConfig(siteName, name, command string, scale int, params ma
 
 	// Build environment vars from params
 	var envParts []string
-	if envRaw, ok := params["env"].(map[string]interface{}); ok {
+	if envRaw, ok := params["env"].(map[string]any); ok {
 		for k, v := range envRaw {
 			envParts = append(envParts, fmt.Sprintf("%s=%q", k, fmt.Sprintf("%v", v)))
 		}
