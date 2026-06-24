@@ -13,7 +13,7 @@ ekilie.cloud (API)  ◄──WSS──►  ekilied (on your VPS)
 ## Quick start
 
 ```bash
-curl -fsSL https://get.ekilie.cloud/install.sh | bash
+curl -fsSL https://ekilie.cloud/ekilied/install.sh | bash
 ```
 
 ## Build
