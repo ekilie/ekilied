@@ -270,7 +270,7 @@ func (e *JobEngine) runDeployScript(siteName string, params map[string]any, lb *
 	defer e.deployLk.Release(siteName)
 
 	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	repoDir := siteDir + "/repo"
+	repoDir := siteDir + "/current"
 	os.MkdirAll(siteDir, 0755)
 
 	deployScript, _ := params["deploy_script"].(string)
@@ -283,10 +283,7 @@ func (e *JobEngine) runDeployScript(siteName string, params map[string]any, lb *
 		return fmt.Errorf("no deploy script provided")
 	}
 
-	// Write .env before running script
-	writeEnvFile(siteName, params)
-
-	// Clone or pull repository
+	// Clone or pull repository first so repo/ directory exists
 	if repoURL != "" {
 		logf("[deploy] cloning %s [%s]...", repoURL, orDefaultStr(branch, "main"))
 		if err := cloneRepo(repoDir, repoURL, branch, gitToken, commitSHA, lb); err != nil {
@@ -294,6 +291,9 @@ func (e *JobEngine) runDeployScript(siteName string, params map[string]any, lb *
 		}
 		logf("[deploy] cloned successfully")
 	}
+
+	// Write .env to repo root (where frameworks expect it)
+	writeEnvFile(siteName, params)
 
 	// Write deploy script to file
 	scriptPath := siteDir + "/.ekilie-deploy"
@@ -388,19 +388,28 @@ func writeNginxConfig(siteName, config string) error {
 }
 
 func writeEnvFile(siteName string, params map[string]any) error {
-	envDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	envPath := envDir + "/.env"
-
 	env, _ := params["env"].(map[string]any)
 	if len(env) == 0 {
 		return nil
 	}
 
+	// Default: write .env inside the repo root where frameworks expect it
+	envPath := fmt.Sprintf("/opt/ekilie/sites/%s/current/.env", siteName)
+
+	// Allow deploy script to specify a custom path via env_path param
+	if customPath, ok := params["env_path"].(string); ok && customPath != "" {
+		envPath = customPath
+	}
+
+	// Ensure parent directory exists
+	parentDir := envPath[:len(envPath)-len("/.env")]
+	os.MkdirAll(parentDir, 0755)
+
 	var buf []byte
 	for k, v := range env {
 		buf = append(buf, []byte(fmt.Sprintf("%s=%v\n", k, v))...)
 	}
-	return writeFile(envPath, string(buf))
+	return os.WriteFile(envPath, buf, 0644)
 }
 
 func issueSSL(domain, email string) error {
@@ -477,7 +486,7 @@ func createSupervisorConfig(siteName, name, command string, scale int, params ma
 
 	conf := fmt.Sprintf(`[program:%s]
 command=%s
-directory=%s/repo
+	directory=%s/current
 user=ekilie
 numprocs=%d
 autostart=true
