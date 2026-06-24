@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -224,6 +225,24 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		service, _ := params["service"].(string)
 		execErr = run("systemctl", "restart", service)
 
+	case "daemon_install_supervisor":
+		writeLog("[daemon] installing supervisor...")
+		execErr = installSupervisor()
+
+	case "daemon_create":
+		name, _ := params["name"].(string)
+		command, _ := params["command"].(string)
+		scale, _ := params["scale"].(float64)
+		execErr = createSupervisorConfig(siteName, name, command, int(scale), params)
+
+	case "daemon_delete":
+		name, _ := params["name"].(string)
+		execErr = deleteSupervisorConfig(siteName, name)
+
+	case "daemon_restart":
+		name, _ := params["name"].(string)
+		execErr = restartSupervisorProgram(siteName, name)
+
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action)
 	}
@@ -410,6 +429,102 @@ func addSSHKey(publicKey string) error {
 		return fmt.Errorf("write key: %w", err)
 	}
 	return nil
+}
+
+// ── Supervisor daemon management ───────────────────────────
+
+const supervisorConfDir = "/etc/supervisor/conf.d"
+
+func installSupervisor() error {
+	if err := run("apt-get", "install", "-y", "supervisor"); err != nil {
+		return err
+	}
+	if err := run("systemctl", "enable", "supervisor"); err != nil {
+		return err
+	}
+	return run("systemctl", "start", "supervisor")
+}
+
+func daemonProgramName(siteName, name string) string {
+	return fmt.Sprintf("%s-%s", siteName, name)
+}
+
+func createSupervisorConfig(siteName, name, command string, scale int, params map[string]interface{}) error {
+	if command == "" {
+		return fmt.Errorf("command is required")
+	}
+	if scale < 1 {
+		scale = 1
+	}
+
+	progName := daemonProgramName(siteName, name)
+	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
+	logDir := siteDir + "/logs"
+	os.MkdirAll(logDir, 0755)
+
+	// Build environment vars from params
+	var envParts []string
+	if envRaw, ok := params["env"].(map[string]interface{}); ok {
+		for k, v := range envRaw {
+			envParts = append(envParts, fmt.Sprintf("%s=%q", k, fmt.Sprintf("%v", v)))
+		}
+	}
+
+	var envSection string
+	if len(envParts) > 0 {
+		envSection = fmt.Sprintf("environment=%s\n", strings.Join(envParts, ","))
+	}
+
+	conf := fmt.Sprintf(`[program:%s]
+command=%s
+directory=%s/repo
+user=ekilie
+numprocs=%d
+autostart=true
+autorestart=true
+stopwaitsecs=10
+startretries=3
+stdout_logfile=%s/%s.log
+stderr_logfile=%s/%s-error.log
+%s`, progName, command, siteDir, scale,
+		logDir, name, logDir, name, envSection)
+
+	path := filepath.Join(supervisorConfDir, progName+".conf")
+	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
+		return fmt.Errorf("write supervisor conf: %w", err)
+	}
+
+	// Reread and update supervisor
+	if out, err := exec.Command("supervisorctl", "reread").CombinedOutput(); err != nil {
+		return fmt.Errorf("supervisorctl reread failed: %s", string(out))
+	}
+	if out, err := exec.Command("supervisorctl", "update").CombinedOutput(); err != nil {
+		return fmt.Errorf("supervisorctl update failed: %s", string(out))
+	}
+	return nil
+}
+
+func deleteSupervisorConfig(siteName, name string) error {
+	progName := daemonProgramName(siteName, name)
+	path := filepath.Join(supervisorConfDir, progName+".conf")
+
+	// Stop and remove the program
+	exec.Command("supervisorctl", "stop", progName).Run()
+	exec.Command("supervisorctl", "remove", progName).Run()
+
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove supervisor conf: %w", err)
+	}
+
+	if out, err := exec.Command("supervisorctl", "update").CombinedOutput(); err != nil {
+		return fmt.Errorf("supervisorctl update failed: %s", string(out))
+	}
+	return nil
+}
+
+func restartSupervisorProgram(siteName, name string) error {
+	progName := daemonProgramName(siteName, name)
+	return run("supervisorctl", "restart", progName)
 }
 
 func run(name string, args ...string) error {
