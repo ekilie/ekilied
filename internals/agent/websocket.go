@@ -17,11 +17,12 @@ import (
 type JobHandler func(ctx context.Context, jobID uint, action string, params json.RawMessage)
 
 type WSClient struct {
-	cfg        *config.Config
-	client     *http.Client
-	conn       *websocket.Conn
-	egress     chan []byte
-	onJob      JobHandler
+	cfg    *config.Config
+	client *http.Client
+	conn   *websocket.Conn
+	egress chan []byte
+	onJob  JobHandler
+	docker *DockerService
 }
 
 func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
@@ -34,6 +35,10 @@ func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
 		egress: make(chan []byte, 64),
 		onJob:  onJob,
 	}
+}
+
+func (c *WSClient) SetDockerService(docker *DockerService) {
+	c.docker = docker
 }
 
 // ── Registration (always HTTP) ───────────────────────────────────────────
@@ -170,6 +175,80 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 		case "job_cancelled":
 			log.Println("ws job cancelled (handling pending)")
+
+		case "list_containers":
+			if c.docker == nil {
+				log.Println("docker not available for list_containers")
+				continue
+			}
+			containers, err := c.docker.ListContainers(ctx)
+			if err != nil {
+				log.Printf("list containers error: %v", err)
+				continue
+			}
+			infos := make([]containerInfo, 0, len(containers))
+			for _, ct := range containers {
+				infos = append(infos, containerToInfo(ct))
+			}
+			msg, _ := json.Marshal(map[string]interface{}{
+				"v": 1, "type": "container_list",
+				"payload": map[string]interface{}{
+					"containers": infos,
+				},
+			})
+			select {
+			case c.egress <- msg:
+			default:
+			}
+
+		case "log_stream":
+			if c.docker == nil {
+				log.Println("docker not available for log_stream")
+				continue
+			}
+			var req struct {
+				Container string `json:"container"`
+				Tail      int    `json:"tail"`
+				StreamID  string `json:"stream_id"`
+			}
+			json.Unmarshal(envelope.Payload, &req)
+			if req.Tail == 0 {
+				req.Tail = 100
+			}
+
+			log.Printf("starting log stream: container=%s stream_id=%s", req.Container, req.StreamID)
+
+			logCh := make(chan string, 64)
+
+			streamCtx, streamCancel := context.WithCancel(ctx)
+			go func() {
+				for line := range logCh {
+					msg, _ := json.Marshal(map[string]interface{}{
+						"v": 1, "type": "log_line",
+						"payload": map[string]interface{}{
+							"stream_id": req.StreamID,
+							"container": req.Container,
+							"stream":    "stdout",
+							"line":      line,
+							"ts":        time.Now().UTC().Format(time.RFC3339),
+						},
+					})
+					select {
+					case c.egress <- msg:
+					default:
+					}
+				}
+			}()
+
+			err := c.docker.StreamLogs(streamCtx, req.Container, req.Tail, logCh)
+			if err != nil {
+				log.Printf("log stream ended: %v", err)
+			}
+			close(logCh)
+			streamCancel()
+
+		case "log_stream_stop":
+			log.Println("log stream stop requested")
 
 		default:
 			log.Printf("ws unknown message type: %s", envelope.Type)

@@ -1,13 +1,13 @@
 package dtos
 
 type RegisterRequest struct {
-	ServerID     uint   `json:"server_id"`
-	Token        string `json:"token"`
-	AgentVersion string `json:"agent_version"`
-	Hostname     string `json:"hostname,omitempty"`
-	OS           string `json:"os,omitempty"`
-	PublicIP     string `json:"public_ip,omitempty"`
-	Arch         string `json:"arch,omitempty"`
+	ServerID     uint         `json:"server_id"`
+	Token        string       `json:"token"`
+	AgentVersion string       `json:"agent_version"`
+	Hostname     string       `json:"hostname,omitempty"`
+	OS           string       `json:"os,omitempty"`
+	PublicIP     string       `json:"public_ip,omitempty"`
+	Arch         string       `json:"arch,omitempty"`
 	Capabilities []Capability `json:"capabilities,omitempty"`
 }
 
@@ -25,9 +25,9 @@ type Capability struct {
 }
 
 type HeartbeatRequest struct {
-	AgentID  string         `json:"agent_id"`
-	ServerID uint           `json:"server_id"`
-	TS       string         `json:"ts,omitempty"`
+	AgentID  string           `json:"agent_id"`
+	ServerID uint             `json:"server_id"`
+	TS       string           `json:"ts,omitempty"`
 	Metrics  HeartbeatMetrics `json:"metrics"`
 }
 
@@ -47,12 +47,12 @@ type HeartbeatResponse struct {
 }
 
 type JobItem struct {
-	ID         uint                   `json:"id"`
-	Type       string                 `json:"type"`
-	Action     string                 `json:"action"`
+	ID         uint           `json:"id"`
+	Type       string         `json:"type"`
+	Action     string         `json:"action"`
 	Params     map[string]any `json:"params"`
-	MaxRetries int                    `json:"max_retries"`
-	Timeout    int                    `json:"timeout"`
+	MaxRetries int            `json:"max_retries"`
+	Timeout    int            `json:"timeout"`
 }
 
 type PollJobsResponse struct {
@@ -72,8 +72,8 @@ type LogLine struct {
 }
 
 type CompleteJobRequest struct {
-	Status string      `json:"status"`
-	Result any `json:"result,omitempty"`
-	Error  string      `json:"error,omitempty"`
-	Step   string      `json:"step,omitempty"`
+	Status string `json:"status"`
+	Result any    `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
+	Step   string `json:"step,omitempty"`
 }

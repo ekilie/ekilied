@@ -19,6 +19,7 @@ type Ekilied struct {
 	db     *gorm.DB
 	ws     *WSClient
 	engine *JobEngine
+	docker *DockerService
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -85,6 +86,15 @@ func (e *Ekilied) Start() error {
 
 	e.detectCapabilities()
 
+	dockerSvc, err := NewDockerService(e)
+	if err == nil {
+		e.docker = dockerSvc
+		e.ws.SetDockerService(dockerSvc)
+		log.Println("docker monitoring enabled")
+	} else {
+		log.Println("docker monitoring disabled:", err)
+	}
+
 	e.wg.Go(func() { ; e.heartbeatLoop() })
 
 	e.wg.Go(func() { ; e.ws.Connect(e.ctx) })
@@ -98,6 +108,9 @@ func (e *Ekilied) Start() error {
 func (e *Ekilied) Stop() {
 	log.Println("stopping ekilied...")
 	e.cancel()
+	if e.docker != nil {
+		e.docker.Close()
+	}
 	e.wg.Wait()
 	e.db.Model(&models.Identity{}).Where("1 = 1").Update("connected", false)
 	log.Println("ekilied stopped")

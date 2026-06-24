@@ -71,15 +71,15 @@ type Config struct {
 	RegistrationToken string `yaml:"registration_token"`
 
 	// Control plane connection
-	APIURL           string `yaml:"api_url"`
-	WsURL            string `yaml:"ws_url"`
-	PollInterval     int    `yaml:"poll_interval"`
-	HeartbeatInterval int   `yaml:"heartbeat_interval"`
+	APIURL            string `yaml:"api_url"`
+	WsURL             string `yaml:"ws_url"`
+	PollInterval      int    `yaml:"poll_interval"`
+	HeartbeatInterval int    `yaml:"heartbeat_interval"`
 
 	// Storage
-	DBPath   string
-	DataDir  string
-	LogDir   string
+	DBPath     string
+	DataDir    string
+	LogDir     string
 	SocketPath string
 
 	// Runtime
