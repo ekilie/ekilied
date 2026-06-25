@@ -422,7 +422,7 @@ func writeEnvFile(siteName string, params map[string]any) error {
 
 	var buf []byte
 	for k, v := range env {
-		buf = append(buf, []byte(fmt.Sprintf("%s=%v\n", k, v))...)
+		buf = append(buf, fmt.Appendf(nil, "%s=%v\n", k, v)...)
 	}
 	return os.WriteFile(envPath, buf, 0644)
 }
