@@ -243,6 +243,21 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		name, _ := params["name"].(string)
 		execErr = restartSupervisorProgram(siteName, name)
 
+	case "self_update":
+		writeLog("[update] checking for updates...")
+		repo := "ekilie/ekilied"
+		release, available, err := CheckForUpdate(repo, version)
+		if err != nil {
+			execErr = fmt.Errorf("check failed: %w", err)
+			break
+		}
+		if !available {
+			writeLog("[update] already up to date (current: %s)", version)
+			break
+		}
+		writeLog("[update] found %s (current: %s), downloading...", release.TagName, version)
+		execErr = SelfUpdate(repo, release)
+
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action)
 	}

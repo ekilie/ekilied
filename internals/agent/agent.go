@@ -101,8 +101,43 @@ func (e *Ekilied) Start() error {
 
 	e.wg.Go(func() { ; e.httpPollLoop() })
 
+	if e.cfg.AutoUpdate {
+		e.wg.Go(func() { ; e.updateCheckLoop() })
+	} else {
+		log.Println("auto-update disabled")
+	}
+
 	log.Println("ekilied running")
 	return nil
+}
+
+func (e *Ekilied) updateCheckLoop() {
+	interval := time.Duration(e.cfg.UpdateCheckInterval) * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	repo := "ekilie/ekilied"
+	log.Printf("[update] checking for updates every %ds", e.cfg.UpdateCheckInterval)
+
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-ticker.C:
+			release, available, err := CheckForUpdate(repo, version)
+			if err != nil {
+				log.Printf("[update] check failed: %v", err)
+				continue
+			}
+			if !available {
+				continue
+			}
+			log.Printf("[update] new version available: %s", release.TagName)
+			if err := SelfUpdate(repo, release); err != nil {
+				log.Printf("[update] failed: %v", err)
+			}
+		}
+	}
 }
 
 func (e *Ekilied) Stop() {

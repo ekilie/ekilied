@@ -19,6 +19,8 @@ type FlagOverrides struct {
 	LogLevel          string
 	PollInterval      int
 	HeartbeatInterval int
+	AutoUpdate        *bool
+	UpdateInterval    int
 }
 
 type ConfigOption func(*Config)
@@ -60,6 +62,12 @@ func WithFlags(overrides FlagOverrides) ConfigOption {
 		if overrides.HeartbeatInterval > 0 {
 			cfg.HeartbeatInterval = overrides.HeartbeatInterval
 		}
+		if overrides.AutoUpdate != nil {
+			cfg.AutoUpdate = *overrides.AutoUpdate
+		}
+		if overrides.UpdateInterval > 0 {
+			cfg.UpdateCheckInterval = overrides.UpdateInterval
+		}
 	}
 }
 
@@ -84,6 +92,10 @@ type Config struct {
 
 	// Runtime
 	LogLevel string
+
+	// Auto-update
+	AutoUpdate         bool `yaml:"auto_update"`
+	UpdateCheckInterval int  `yaml:"update_check_interval"`
 }
 
 func Defaults() *Config {
@@ -95,6 +107,8 @@ func Defaults() *Config {
 		LogDir:            "/var/log/ekilie",
 		SocketPath:        "/var/run/ekilie/agent.sock",
 		LogLevel:          "info",
+		AutoUpdate:         true,
+		UpdateCheckInterval: 86400,
 	}
 }
 
@@ -120,6 +134,9 @@ func (c *Config) SetDefaults() {
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = d.LogLevel
+	}
+	if c.UpdateCheckInterval == 0 {
+		c.UpdateCheckInterval = d.UpdateCheckInterval
 	}
 }
 
@@ -209,6 +226,10 @@ func parseYAML(data string, cfg *Config) error {
 			cfg.PollInterval, _ = strconv.Atoi(val)
 		case "heartbeat_interval":
 			cfg.HeartbeatInterval, _ = strconv.Atoi(val)
+		case "auto_update":
+			cfg.AutoUpdate = val == "true" || val == "1" || val == "yes"
+		case "update_check_interval":
+			cfg.UpdateCheckInterval, _ = strconv.Atoi(val)
 		}
 	}
 	return nil
@@ -259,6 +280,14 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("EKILIED_HEARTBEAT_INTERVAL"); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			cfg.HeartbeatInterval = i
+		}
+	}
+	if v := os.Getenv("EKILIED_AUTO_UPDATE"); v != "" {
+		cfg.AutoUpdate = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("EKILIED_UPDATE_INTERVAL"); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			cfg.UpdateCheckInterval = i
 		}
 	}
 }
