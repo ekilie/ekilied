@@ -190,9 +190,9 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			for _, ct := range containers {
 				infos = append(infos, containerToInfo(ct))
 			}
-			msg, _ := json.Marshal(map[string]interface{}{
+			msg, _ := json.Marshal(map[string]any{
 				"v": 1, "type": "container_list",
-				"payload": map[string]interface{}{
+				"payload": map[string]any{
 					"containers": infos,
 				},
 			})
@@ -223,9 +223,9 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			streamCtx, streamCancel := context.WithCancel(ctx)
 			go func() {
 				for line := range logCh {
-					msg, _ := json.Marshal(map[string]interface{}{
+					msg, _ := json.Marshal(map[string]any{
 						"v": 1, "type": "log_line",
-						"payload": map[string]interface{}{
+						"payload": map[string]any{
 							"stream_id": req.StreamID,
 							"container": req.Container,
 							"stream":    "stdout",
@@ -269,7 +269,7 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 	})
 
 	if c.conn != nil {
-		msg, _ := json.Marshal(map[string]interface{}{
+		msg, _ := json.Marshal(map[string]any{
 			"v": 1, "type": "heartbeat", "payload": json.RawMessage(payload),
 		})
 		select {
@@ -361,7 +361,7 @@ func (c *WSClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogL
 	return nil
 }
 
-func (c *WSClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg, step string, result interface{}) error {
+func (c *WSClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg, step string, result any) error {
 	body, _ := json.Marshal(dtos.CompleteJobRequest{
 		Status: status, Error: errorMsg, Step: step, Result: result,
 	})
