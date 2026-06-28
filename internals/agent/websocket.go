@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -17,12 +18,17 @@ import (
 type JobHandler func(ctx context.Context, jobID uint, action string, params json.RawMessage)
 
 type WSClient struct {
-	cfg    *config.Config
-	client *http.Client
-	conn   *websocket.Conn
-	egress chan []byte
-	onJob  JobHandler
-	docker *DockerService
+	cfg       *config.Config
+	client    *http.Client
+	conn      *websocket.Conn
+	connected atomic.Bool
+	egress    chan []byte
+	onJob     JobHandler
+	docker    *DockerService
+}
+
+func (c *WSClient) Connected() bool {
+	return c.connected.Load()
 }
 
 func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
@@ -112,6 +118,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 	}
 
 	c.conn = conn
+	c.connected.Store(true)
 	log.Println("ws connected")
 
 	// Read pump — receives messages from control plane
@@ -133,6 +140,25 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 		for msg := range c.egress {
 			if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
 				log.Printf("ws write error: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Periodic ping to keep the connection alive
+	pingCtx, pingCancel := context.WithCancel(ctx)
+	defer pingCancel()
+	go func() {
+		pingTicker := time.NewTicker(30 * time.Second)
+		defer pingTicker.Stop()
+		for {
+			select {
+			case <-pingTicker.C:
+				if err := conn.Ping(pingCtx); err != nil {
+					log.Printf("ws ping error: %v", err)
+					return
+				}
+			case <-pingCtx.Done():
 				return
 			}
 		}
@@ -255,6 +281,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 		}
 	}
 
+	c.connected.Store(false)
 	return fmt.Errorf("connection closed")
 }
 

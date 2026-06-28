@@ -403,8 +403,12 @@ func writeNginxConfig(siteName, config string) error {
 }
 
 func writeEnvFile(siteName string, params map[string]any) error {
-	env, _ := params["env"].(map[string]any)
-	if len(env) == 0 {
+	envRaw, ok := params["env"]
+	if !ok {
+		return nil
+	}
+	env, ok := envRaw.(map[string]any)
+	if !ok || len(env) == 0 {
 		return nil
 	}
 
@@ -552,7 +556,9 @@ func restartSupervisorProgram(siteName, name string) error {
 }
 
 func run(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s: %s", name, string(out))
 	}
@@ -560,5 +566,5 @@ func run(name string, args ...string) error {
 }
 
 func writeFile(path, content string) error {
-	return exec.Command("bash", "-c", fmt.Sprintf("cat > %s << 'FILEEOF'\n%s\nFILEEOF", path, content)).Run()
+	return os.WriteFile(path, []byte(content), 0644)
 }
