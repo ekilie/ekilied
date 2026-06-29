@@ -16,7 +16,6 @@ import (
 )
 
 type JobHandler func(ctx context.Context, jobID uint, action string, params json.RawMessage)
-
 type WSClient struct {
 	cfg       *config.Config
 	client    *http.Client
