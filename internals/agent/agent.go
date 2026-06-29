@@ -175,10 +175,6 @@ func (e *Ekilied) httpPollLoop() {
 		case <-e.ctx.Done():
 			return
 		case <-pollTicker.C:
-			// Skip HTTP polling when WebSocket is connected — jobs arrive via WS
-			if e.ws.Connected() {
-				continue
-			}
 			jobs, err := e.ws.PollJobs(e.ctx)
 			if err != nil {
 				continue
