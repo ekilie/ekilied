@@ -42,6 +42,20 @@ func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
 	}
 }
 
+func (c *WSClient) sendError(errType, message string) {
+	msg, _ := json.Marshal(map[string]any{
+		"v": 1, "type": "error",
+		"payload": map[string]any{
+			"error":   errType,
+			"message": message,
+		},
+	})
+	select {
+	case c.egress <- msg:
+	default:
+	}
+}
+
 func (c *WSClient) SetDockerService(docker *DockerService) {
 	c.docker = docker
 }
@@ -209,11 +223,13 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 		case "list_containers":
 			if c.docker == nil {
 				log.Println("docker not available for list_containers")
+				c.sendError("docker_not_available", "Docker is not installed on this server")
 				continue
 			}
 			containers, err := c.docker.ListContainers(ctx)
 			if err != nil {
 				log.Printf("list containers error: %v", err)
+				c.sendError("docker_error", err.Error())
 				continue
 			}
 			infos := make([]containerInfo, 0, len(containers))
@@ -234,6 +250,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 		case "log_stream":
 			if c.docker == nil {
 				log.Println("docker not available for log_stream")
+				c.sendError("docker_not_available", "Docker is not installed on this server")
 				continue
 			}
 			var req struct {
