@@ -71,10 +71,15 @@ func (c *WSClient) Register(ctx context.Context) (sessionToken, agentID string, 
 		return "", "", fmt.Errorf("registration failed (HTTP %d)", resp.StatusCode)
 	}
 
-	var result dtos.RegisterResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	// API wraps response in {"success":true,"data":{...}}
+	var apiResp struct {
+		Success bool                  `json:"success"`
+		Data    dtos.RegisterResponse `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return "", "", fmt.Errorf("decode: %w", err)
 	}
+	result := apiResp.Data
 
 	if result.WsURL != "" {
 		c.cfg.WsURL = result.WsURL
