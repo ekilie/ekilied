@@ -3,6 +3,8 @@ package database
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/glebarez/sqlite"
@@ -31,6 +33,13 @@ func DefaultConfig(path string) Config {
 }
 
 func Connect(cfg Config) error {
+	// Ensure the database directory exists
+	if dir := filepath.Dir(cfg.Path); dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create database directory %s: %w", dir, err)
+		}
+	}
+
 	db, err := gorm.Open(sqlite.Open(cfg.Path), &gorm.Config{
 		Logger: logger.Default.LogMode(cfg.LogLevel),
 	})
