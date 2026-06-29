@@ -144,6 +144,7 @@ func splitLines(s string) []string {
 type JobEngine struct {
 	client   *WSClient
 	deployLk *DeployLock
+	active   sync.Map // map[uint]struct{} — tracks actively executing job IDs
 }
 
 func NewJobEngine(client *WSClient) *JobEngine {
@@ -155,6 +156,13 @@ func NewJobEngine(client *WSClient) *JobEngine {
 
 func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawParams json.RawMessage) {
 	log.Printf("executing job %d: action=%s", jobID, action)
+
+	// Dedup: skip if this job is already being executed
+	if _, loaded := e.active.LoadOrStore(jobID, struct{}{}); loaded {
+		log.Printf("job %d already executing, skipping duplicate", jobID)
+		return
+	}
+	defer e.active.Delete(jobID)
 
 	// Accept the job
 	if err := e.client.AcceptJob(ctx, jobID); err != nil {
