@@ -12,12 +12,13 @@ BUILD_DATE  := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS     := -s -w \
 	-X '$(MODULE)/cmd/$(APP_NAME).Version=$(VERSION)' \
 	-X '$(MODULE)/cmd/$(APP_NAME).Commit=$(COMMIT)'
+BUILD_FLAGS := -trimpath
 BUILD_DIR   := ./build
 CGO_ENABLED ?= 0
 
 # ── Development ───────────────────────────────────────────────────────────────
 build:
-	CGO_ENABLED=$(CGO_ENABLED) go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME) ./cmd/$(APP_NAME)
+	CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME) ./cmd/$(APP_NAME)
 
 run: build
 	./$(BUILD_DIR)/$(APP_NAME)
