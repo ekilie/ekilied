@@ -275,6 +275,10 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		publicKey, _ := params["public_key"].(string)
 		execErr = addSSHKey(publicKey)
 
+	case "ssh_key_remove":
+		publicKey, _ := params["public_key"].(string)
+		execErr = removeSSHKey(publicKey)
+
 	case "service_restart":
 		service, _ := params["service"].(string)
 		execErr = restartService(ctx, service)
