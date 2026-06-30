@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -147,21 +146,6 @@ func (lb *LogBatcher) Close() {
 	lb.cancel()
 }
 
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
-}
-
 // ── Job engine ──────────────────────────────────────────────────────
 
 // JobEngine receives job triggers, claims them from the control plane,
@@ -207,7 +191,6 @@ func (e *JobEngine) HandleJobTrigger(ctx context.Context, jobID uint) {
 	}
 
 	// Atomically claim the job (marks as accepted on backend) and get full details.
-	// Single HTTP call — backend is the source of truth.
 	job, err := e.client.ClaimJob(ctx, jobID)
 	if err != nil {
 		log.Printf("handle job trigger %d: claim failed: %v", jobID, err)
@@ -266,21 +249,10 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 
 	case "install_nginx":
 		writeLog("[system] installing nginx...")
-		execErr = run(ctx, "apt-get", "install", "-y", "nginx")
+		execErr = installNginx(ctx)
 
 	case "install_node":
-		writeLog("[system] adding NodeSource repository...")
-		if err := run(ctx, "bash", "-c", "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -"); err != nil {
-			execErr = fmt.Errorf("nodesource setup: %w", err)
-			break
-		}
-		writeLog("[system] installing node.js...")
-		if err := run(ctx, "apt-get", "install", "-y", "nodejs"); err != nil {
-			execErr = fmt.Errorf("nodejs install: %w", err)
-			break
-		}
-		writeLog("[system] installing pm2...")
-		execErr = run(ctx, "npm", "install", "-g", "pm2")
+		execErr = installNode(ctx, writeLog)
 
 	case "deploy":
 		writeLog("[deploy] deploying %s...", siteName)
@@ -305,7 +277,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 
 	case "service_restart":
 		service, _ := params["service"].(string)
-		execErr = run(ctx, "systemctl", "restart", service)
+		execErr = restartService(ctx, service)
 
 	case "daemon_install_supervisor":
 		writeLog("[daemon] installing supervisor...")
@@ -371,6 +343,8 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	}
 }
 
+// runDeployScript performs the full deploy workflow: acquire lock, clone/pull repo,
+// copy env.example, write .env, write deploy script, and run it.
 func (e *JobEngine) runDeployScript(ctx context.Context, siteName string, params map[string]any, lb *LogBatcher, logf func(string, ...any)) error {
 	if !e.deployLk.TryAcquire(siteName, 0) {
 		return fmt.Errorf("deploy already in progress for site: %s", siteName)
@@ -431,290 +405,4 @@ func (e *JobEngine) runDeployScript(ctx context.Context, siteName string, params
 	cmd.Stderr = lb
 
 	return cmd.Run()
-}
-
-func cloneRepo(ctx context.Context, repoDir, repoURL, branch, gitToken, commitSHA string, lb *LogBatcher) error {
-	authenticatedURL := repoURL
-
-	// Use git token for GitHub private repos
-	if gitToken != "" && strings.Contains(repoURL, "github.com") {
-		authenticatedURL = strings.Replace(
-			repoURL, "https://",
-			fmt.Sprintf("https://x-access-token:%s@", gitToken), 1,
-		)
-	}
-
-	// Normalise empty branch to "HEAD" so both fresh-clone and already-cloned paths
-	// behave consistently (checkout the remote's default branch).
-	ref := branch
-	if ref == "" {
-		ref = "HEAD"
-	}
-
-	if _, err := os.Stat(repoDir + "/.git"); os.IsNotExist(err) {
-		// Fresh clone
-		args := []string{"clone", "--depth=1"}
-		if ref != "HEAD" {
-			args = append(args, "-b", ref)
-		}
-		args = append(args, authenticatedURL, repoDir)
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Stdout = lb
-		cmd.Stderr = lb
-		return cmd.Run()
-	}
-
-	// Already cloned — fetch and checkout
-	cmd := exec.CommandContext(ctx, "git", "fetch", "--depth=1", "origin", ref)
-	cmd.Dir = repoDir
-	cmd.Stdout = lb
-	cmd.Stderr = lb
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	checkoutRef := "origin/" + ref
-	if commitSHA != "" {
-		checkoutRef = commitSHA
-	}
-
-	cmd = exec.CommandContext(ctx, "git", "checkout", "-f", checkoutRef)
-	cmd.Dir = repoDir
-	cmd.Stdout = lb
-	cmd.Stderr = lb
-	return cmd.Run()
-}
-
-func orDefaultStr(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-func createSiteDir(ctx context.Context, siteName string) error {
-	return run(ctx, "mkdir", "-p", fmt.Sprintf("/opt/ekilie/sites/%s", siteName))
-}
-
-func removeSiteDir(ctx context.Context, siteName string) error {
-	return run(ctx, "rm", "-rf", fmt.Sprintf("/opt/ekilie/sites/%s", siteName))
-}
-
-func writeNginxConfig(ctx context.Context, siteName, nginxConfig string) error {
-	path := fmt.Sprintf("/etc/nginx/sites-available/%s", siteName)
-	if err := writeFile(path, nginxConfig); err != nil {
-		return err
-	}
-	// Validate config
-	if out, err := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); err != nil {
-		return fmt.Errorf("nginx validation failed: %s", string(out))
-	}
-	// Enable on boot and reload/start
-	exec.CommandContext(ctx, "systemctl", "enable", "nginx").Run()
-	return run(ctx, "systemctl", "reload-or-restart", "nginx")
-}
-
-func writeEnvFile(siteName string, params map[string]any) error {
-	envRaw, ok := params["env"]
-	if !ok {
-		return nil
-	}
-	env, ok := envRaw.(map[string]any)
-	if !ok || len(env) == 0 {
-		return nil
-	}
-
-	// Default: write .env at site root (widely expected location)
-	envPath := fmt.Sprintf("/opt/ekilie/sites/%s/.env", siteName)
-
-	// Allow deploy script to specify a custom path via env_path param
-	if customPath, ok := params["env_path"].(string); ok && customPath != "" {
-		envPath = customPath
-	}
-
-	// Ensure parent directory exists
-	parentDir := filepath.Dir(envPath)
-	os.MkdirAll(parentDir, 0755)
-
-	var buf []byte
-	for k, v := range env {
-		buf = append(buf, fmt.Appendf(nil, "%s=%v\n", k, v)...)
-	}
-	return os.WriteFile(envPath, buf, 0644)
-}
-
-func issueSSL(ctx context.Context, domain, email string) error {
-	args := []string{"--nginx", "--non-interactive", "--agree-tos", "--redirect"}
-	if email != "" {
-		args = append(args, "--email", email)
-	}
-	args = append(args, "-d", domain)
-	return run(ctx, "certbot", args...)
-}
-
-func addSSHKey(publicKey string) error {
-	if publicKey == "" {
-		return fmt.Errorf("public key is required")
-	}
-	sshDir := "/root/.ssh"
-	os.MkdirAll(sshDir, 0700)
-
-	authorizedKeysPath := sshDir + "/authorized_keys"
-
-	// Read existing keys to avoid duplicates
-	if data, err := os.ReadFile(authorizedKeysPath); err == nil {
-		if strings.Contains(string(data), publicKey) {
-			// Key already exists — no-op
-			return nil
-		}
-	}
-
-	f, err := os.OpenFile(authorizedKeysPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("open authorized_keys: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := f.WriteString(publicKey + "\n"); err != nil {
-		return fmt.Errorf("write key: %w", err)
-	}
-	return nil
-}
-
-// ── Supervisor daemon management ───────────────────────────
-
-const supervisorConfDir = "/etc/supervisor/conf.d"
-
-func installSupervisor(ctx context.Context) error {
-	if err := run(ctx, "apt-get", "install", "-y", "supervisor"); err != nil {
-		return err
-	}
-	if err := run(ctx, "systemctl", "enable", "supervisor"); err != nil {
-		return err
-	}
-	return run(ctx, "systemctl", "start", "supervisor")
-}
-
-func daemonProgramName(siteName, name string) string {
-	return fmt.Sprintf("%s-%s", siteName, name)
-}
-
-func ensureUser(username string) {
-	if exec.Command("id", "-u", username).Run() == nil {
-		return // user already exists
-	}
-	exec.Command("useradd", "-r", "-s", "/bin/false", "-d", "/opt/ekilie", username).Run()
-}
-
-func createSupervisorConfig(siteName, name, command string, scale int, params map[string]any) error {
-	if command == "" {
-		return fmt.Errorf("command is required")
-	}
-	if scale < 1 {
-		scale = 1
-	}
-
-	ensureUser("ekilie")
-
-	progName := daemonProgramName(siteName, name)
-	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	logDir := siteDir + "/logs"
-	os.MkdirAll(logDir, 0755)
-
-	// Build environment vars from params
-	var envParts []string
-	if envRaw, ok := params["env"].(map[string]any); ok {
-		for k, v := range envRaw {
-			envParts = append(envParts, fmt.Sprintf("%s=%q", k, fmt.Sprintf("%v", v)))
-		}
-	}
-
-	var envSection string
-	if len(envParts) > 0 {
-		envSection = fmt.Sprintf("environment=%s\n", strings.Join(envParts, ","))
-	}
-
-	conf := fmt.Sprintf(`[program:%s]
-command=%s
-	directory=%s/current
-user=ekilie
-numprocs=%d
-autostart=true
-autorestart=true
-stopwaitsecs=10
-startretries=3
-stdout_logfile=%s/%s.log
-stderr_logfile=%s/%s-error.log
-%s`, progName, command, siteDir, scale,
-		logDir, name, logDir, name, envSection)
-
-	path := filepath.Join(supervisorConfDir, progName+".conf")
-	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
-		return fmt.Errorf("write supervisor conf: %w", err)
-	}
-
-	// Reread and update supervisor
-	if out, err := exec.Command("supervisorctl", "reread").CombinedOutput(); err != nil {
-		return fmt.Errorf("supervisorctl reread failed: %s", string(out))
-	}
-	if out, err := exec.Command("supervisorctl", "update").CombinedOutput(); err != nil {
-		return fmt.Errorf("supervisorctl update failed: %s", string(out))
-	}
-	return nil
-}
-
-func deleteSupervisorConfig(siteName, name string) error {
-	progName := daemonProgramName(siteName, name)
-	path := filepath.Join(supervisorConfDir, progName+".conf")
-
-	// Stop and remove the program
-	exec.Command("supervisorctl", "stop", progName).Run()
-	exec.Command("supervisorctl", "remove", progName).Run()
-
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove supervisor conf: %w", err)
-	}
-
-	if out, err := exec.Command("supervisorctl", "update").CombinedOutput(); err != nil {
-		return fmt.Errorf("supervisorctl update failed: %s", string(out))
-	}
-	return nil
-}
-
-func restartSupervisorProgram(ctx context.Context, siteName, name string) error {
-	progName := daemonProgramName(siteName, name)
-	return run(ctx, "supervisorctl", "restart", progName)
-}
-
-// cleanupSupervisorForSite removes all supervisor programs and configs
-// associated with the given site name. Called when a site is deleted.
-func cleanupSupervisorForSite(siteName string) {
-	pattern := filepath.Join(supervisorConfDir, siteName+"-*.conf")
-	files, _ := filepath.Glob(pattern)
-	for _, f := range files {
-		progName := strings.TrimSuffix(filepath.Base(f), ".conf")
-		exec.Command("supervisorctl", "stop", progName).Run()
-		exec.Command("supervisorctl", "remove", progName).Run()
-		os.Remove(f)
-	}
-	if len(files) > 0 {
-		exec.Command("supervisorctl", "update").Run()
-	}
-}
-
-func run(ctx context.Context, name string, args ...string) error {
-	// Combine parent context (for agent shutdown / job cancellation) with a timeout.
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %s", name, string(out))
-	}
-	return nil
-}
-
-func writeFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0644)
 }
