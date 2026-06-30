@@ -154,6 +154,18 @@ func NewJobEngine(client *WSClient) *JobEngine {
 	}
 }
 
+func (e *JobEngine) HandleJobTrigger(ctx context.Context, jobID uint) {
+	job, err := e.client.FetchJob(ctx, jobID)
+	if err != nil {
+		log.Printf("handle job trigger %d: fetch failed: %v", jobID, err)
+		// If fetch fails (e.g. network error), don't execute with stale data
+		return
+	}
+
+	raw, _ := json.Marshal(job.Params)
+	e.Execute(ctx, job.ID, job.Action, raw)
+}
+
 func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawParams json.RawMessage) {
 	log.Printf("executing job %d: action=%s", jobID, action)
 

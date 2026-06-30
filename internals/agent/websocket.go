@@ -15,7 +15,7 @@ import (
 	"github.com/ekilie/ekilied/internals/dtos"
 )
 
-type JobHandler func(ctx context.Context, jobID uint, action string, params json.RawMessage)
+type JobHandler func(ctx context.Context, jobID uint)
 type WSClient struct {
 	cfg       *config.Config
 	client    *http.Client
@@ -32,7 +32,7 @@ func (c *WSClient) Connected() bool {
 
 func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
 	if onJob == nil {
-		onJob = func(ctx context.Context, jobID uint, action string, params json.RawMessage) {}
+		onJob = func(ctx context.Context, jobID uint) {}
 	}
 	return &WSClient{
 		cfg:    cfg,
@@ -196,16 +196,14 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 		switch envelope.Type {
 		case "job":
 			var job struct {
-				JobID  uint            `json:"job_id"`
-				Action string          `json:"action"`
-				Params json.RawMessage `json:"params"`
+				JobID uint `json:"job_id"`
 			}
 			if err := json.Unmarshal(envelope.Payload, &job); err != nil {
 				log.Printf("ws job unmarshal error: %v", err)
 				continue
 			}
-			log.Printf("ws job received: id=%d action=%s", job.JobID, job.Action)
-			go c.onJob(ctx, job.JobID, job.Action, job.Params)
+			log.Printf("ws job trigger received: id=%d", job.JobID)
+			go c.onJob(ctx, job.JobID)
 
 		case "token_rotated":
 			var payload struct {
@@ -369,6 +367,39 @@ func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
 		return nil, err
 	}
 	return result.Data, nil
+}
+
+func (c *WSClient) FetchJob(ctx context.Context, jobID uint) (*dtos.JobItem, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		fmt.Sprintf("%s/agents/jobs/%d", c.cfg.APIURL, jobID), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch job %d: %w", jobID, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch job %d: HTTP %d", jobID, resp.StatusCode)
+	}
+
+	var apiResp struct {
+		Success bool          `json:"success"`
+		Data    *dtos.JobItem `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, fmt.Errorf("decode job %d: %w", jobID, err)
+	}
+
+	if !apiResp.Success || apiResp.Data == nil {
+		return nil, fmt.Errorf("fetch job %d: not found", jobID)
+	}
+
+	return apiResp.Data, nil
 }
 
 func (c *WSClient) AcceptJob(ctx context.Context, jobID uint) error {

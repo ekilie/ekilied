@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
@@ -36,8 +35,8 @@ func New(cfg *config.Config, db *gorm.DB) (*Ekilied, error) {
 	}
 
 	// WS client with job handler callback
-	e.ws = NewWSClient(cfg, func(jobCtx context.Context, jobID uint, action string, params json.RawMessage) {
-		e.engine.Execute(jobCtx, jobID, action, params)
+	e.ws = NewWSClient(cfg, func(jobCtx context.Context, jobID uint) {
+		e.engine.HandleJobTrigger(jobCtx, jobID)
 	})
 	e.engine = NewJobEngine(e.ws)
 
@@ -180,9 +179,8 @@ func (e *Ekilied) httpPollLoop() {
 				continue
 			}
 			for _, job := range jobs {
-				raw, _ := json.Marshal(job.Params)
 				log.Printf("polled job: id=%d action=%s", job.ID, job.Action)
-				go e.engine.Execute(e.ctx, job.ID, job.Action, raw)
+				go e.engine.HandleJobTrigger(e.ctx, job.ID)
 			}
 		}
 	}
