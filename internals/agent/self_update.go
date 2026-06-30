@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,34 @@ type GitHubRelease struct {
 		Name               string `json:"name"`
 		BrowserDownloadURL string `json:"browser_download_url"`
 	} `json:"assets"`
+}
+
+// compareVersions compares two semver strings (e.g. "1.2.3", "v2.0.0").
+// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+func compareVersions(a, b string) int {
+	a = strings.TrimPrefix(a, "v")
+	b = strings.TrimPrefix(b, "v")
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+
+	maxLen := max(len(bParts), len(aParts))
+
+	for i := 0; i < maxLen; i++ {
+		var aNum, bNum int
+		if i < len(aParts) {
+			aNum, _ = strconv.Atoi(aParts[i])
+		}
+		if i < len(bParts) {
+			bNum, _ = strconv.Atoi(bParts[i])
+		}
+		if aNum > bNum {
+			return 1
+		}
+		if aNum < bNum {
+			return -1
+		}
+	}
+	return 0
 }
 
 // CheckForUpdate checks GitHub Releases for a newer version.
@@ -54,9 +83,8 @@ func CheckForUpdate(repo, currentVersion string) (*GitHubRelease, bool, error) {
 		return nil, false, nil
 	}
 
-	latest := strings.TrimPrefix(release.TagName, "v")
-	current := strings.TrimPrefix(currentVersion, "v")
-	if latest == current {
+	// Use semver comparison to avoid downgrades
+	if compareVersions(release.TagName, currentVersion) <= 0 {
 		return nil, false, nil
 	}
 
@@ -64,7 +92,8 @@ func CheckForUpdate(repo, currentVersion string) (*GitHubRelease, bool, error) {
 }
 
 // SelfUpdate downloads the latest binary, verifies checksum, and replaces itself.
-// The running process calls systemctl restart and exits — systemd starts the new binary.
+// The caller is responsible for triggering the restart (e.g. via systemctl)
+// AFTER completing the job report, to ensure the control plane gets the result.
 func SelfUpdate(repo string, release *GitHubRelease) error {
 	platform := fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH)
 
@@ -158,10 +187,6 @@ func SelfUpdate(repo string, release *GitHubRelease) error {
 
 	os.Chmod(selfPath, 0755)
 	log.Printf("[update] updated: %s → %s", release.TagName, selfPath)
-
-	// Restart via systemd — this process will be replaced
-	log.Printf("[update] restarting service...")
-	exec.Command("systemctl", "restart", "ekilied").Start()
 
 	return nil
 }

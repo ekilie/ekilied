@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,11 +28,24 @@ type JobHandler func(ctx context.Context, jobID uint)
 type WSClient struct {
 	cfg       *config.Config
 	client    *http.Client
+	connMu    sync.Mutex
 	conn      *websocket.Conn
 	connected atomic.Bool
 	egress    chan []byte
 	onJob     JobHandler
 	docker    *DockerService
+}
+
+func (c *WSClient) setConn(conn *websocket.Conn) {
+	c.connMu.Lock()
+	c.conn = conn
+	c.connMu.Unlock()
+}
+
+func (c *WSClient) getConn() *websocket.Conn {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	return c.conn
 }
 
 // Connected reports whether the WebSocket connection is currently established.
@@ -77,13 +91,14 @@ func (c *WSClient) SetDockerService(docker *DockerService) {
 // ── Registration (always HTTP) ───────────────────────────────────────────
 
 // Register performs the one-time registration handshake with the control plane.
-// It sends the registration token and receives a session token, WebSocket URL,
-// and poll interval in return.
-func (c *WSClient) Register(ctx context.Context) (sessionToken, agentID string, err error) {
+// It sends the registration token, capabilities, and receives a session token,
+// WebSocket URL, and poll interval in return.
+func (c *WSClient) Register(ctx context.Context, capabilities []dtos.Capability) (sessionToken, agentID string, err error) {
 	reqBody, _ := json.Marshal(dtos.RegisterRequest{
 		ServerID:     c.cfg.ServerID,
 		Token:        c.cfg.RegistrationToken,
 		AgentVersion: config.Version,
+		Capabilities: capabilities,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.cfg.APIURL+"/agents/register", bytes.NewReader(reqBody))
@@ -157,7 +172,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 		return fmt.Errorf("dial: %w", err)
 	}
 
-	c.conn = conn
+	c.setConn(conn)
 	c.connected.Store(true)
 	log.Println("ws connected")
 
@@ -327,6 +342,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 	}
 
 	c.connected.Store(false)
+	c.setConn(nil)
 	return fmt.Errorf("connection closed")
 }
 
@@ -342,7 +358,7 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 		Metrics:  metrics,
 	})
 
-	if c.conn != nil {
+	if c.getConn() != nil {
 		msg, _ := json.Marshal(map[string]any{
 			"v": 1, "type": "heartbeat", "payload": json.RawMessage(payload),
 		})

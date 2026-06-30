@@ -218,9 +218,10 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	writeLog := func(format string, args ...any) {
 		lb.mu.Lock()
 		lb.lines = append(lb.lines, dtos.LogLine{
-			Stream: "stdout",
-			Line:   fmt.Sprintf(format, args...),
-			TS:     time.Now().UTC().Format(time.RFC3339),
+			Stream:   "stdout",
+			Line:     fmt.Sprintf(format, args...),
+			TS:       time.Now().UTC().Format(time.RFC3339),
+			Sequence: len(lb.lines) + 1,
 		})
 		lb.mu.Unlock()
 	}
@@ -230,37 +231,47 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	switch action {
 	case "site_create":
 		writeLog("[site] creating site %s...", siteName)
-		execErr = createSiteDir(siteName)
+		execErr = createSiteDir(ctx, siteName)
 
 	case "site_delete":
 		writeLog("[site] deleting site %s...", siteName)
-		execErr = removeSiteDir(siteName)
+		cleanupSupervisorForSite(siteName)
+		execErr = removeSiteDir(ctx, siteName)
 
 	case "install_nginx":
 		writeLog("[system] installing nginx...")
-		execErr = run("apt-get", "install", "-y", "nginx")
+		execErr = run(ctx, "apt-get", "install", "-y", "nginx")
 
 	case "install_node":
+		writeLog("[system] adding NodeSource repository...")
+		if err := run(ctx, "bash", "-c", "curl -fsSL https://deb.nodesource.com/setup_22.x | bash -"); err != nil {
+			execErr = fmt.Errorf("nodesource setup: %w", err)
+			break
+		}
 		writeLog("[system] installing node.js...")
-		execErr = run("bash", "-c",
-			"curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs && npm install -g pm2")
+		if err := run(ctx, "apt-get", "install", "-y", "nodejs"); err != nil {
+			execErr = fmt.Errorf("nodejs install: %w", err)
+			break
+		}
+		writeLog("[system] installing pm2...")
+		execErr = run(ctx, "npm", "install", "-g", "pm2")
 
 	case "deploy":
 		writeLog("[deploy] deploying %s...", siteName)
-		execErr = e.runDeployScript(siteName, params, lb, writeLog)
+		execErr = e.runDeployScript(ctx, siteName, params, lb, writeLog)
 
 	case "update_env":
 		execErr = writeEnvFile(siteName, params)
 
 	case "site_raw_nginx":
 		config, _ := params["raw_config"].(string)
-		execErr = writeNginxConfig(siteName, config)
+		execErr = writeNginxConfig(ctx, siteName, config)
 
 	case "ssl_issue":
 		domain, _ := params["domain"].(string)
 		email, _ := params["email"].(string)
 		writeLog("[ssl] issuing certificate for %s...", domain)
-		execErr = issueSSL(domain, email)
+		execErr = issueSSL(ctx, domain, email)
 
 	case "ssh_key_add":
 		publicKey, _ := params["public_key"].(string)
@@ -268,11 +279,11 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 
 	case "service_restart":
 		service, _ := params["service"].(string)
-		execErr = run("systemctl", "restart", service)
+		execErr = run(ctx, "systemctl", "restart", service)
 
 	case "daemon_install_supervisor":
 		writeLog("[daemon] installing supervisor...")
-		execErr = installSupervisor()
+		execErr = installSupervisor(ctx)
 
 	case "daemon_create":
 		name, _ := params["name"].(string)
@@ -286,7 +297,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 
 	case "daemon_restart":
 		name, _ := params["name"].(string)
-		execErr = restartSupervisorProgram(siteName, name)
+		execErr = restartSupervisorProgram(ctx, siteName, name)
 
 	case "self_update":
 		writeLog("[update] checking for updates...")
@@ -301,7 +312,18 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 			break
 		}
 		writeLog("[update] found %s (current: %s), downloading...", release.TagName, config.Version)
-		execErr = SelfUpdate(repo, release)
+		if err := SelfUpdate(repo, release); err != nil {
+			execErr = err
+			break
+		}
+		// Binary replaced — complete job before restarting so the CP gets the result.
+		writeLog("[update] updated successfully, restarting...")
+		lb.flushNow()
+		if err := e.client.CompleteJob(ctx, jobID, "success", "", action, nil); err != nil {
+			log.Printf("complete job %d failed: %v", jobID, err)
+		}
+		exec.Command("systemctl", "restart", "ekilied").Start()
+		return
 
 	default:
 		execErr = fmt.Errorf("unknown action: %s", action)
@@ -323,7 +345,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	}
 }
 
-func (e *JobEngine) runDeployScript(siteName string, params map[string]any, lb *LogBatcher, logf func(string, ...any)) error {
+func (e *JobEngine) runDeployScript(ctx context.Context, siteName string, params map[string]any, lb *LogBatcher, logf func(string, ...any)) error {
 	if !e.deployLk.TryAcquire(siteName, 0) {
 		return fmt.Errorf("deploy already in progress for site: %s", siteName)
 	}
@@ -346,13 +368,25 @@ func (e *JobEngine) runDeployScript(siteName string, params map[string]any, lb *
 	// Clone or pull repository first so repo/ directory exists
 	if repoURL != "" {
 		logf("[deploy] cloning %s [%s]...", repoURL, orDefaultStr(branch, "main"))
-		if err := cloneRepo(repoDir, repoURL, branch, gitToken, commitSHA, lb); err != nil {
+		if err := cloneRepo(ctx, repoDir, repoURL, branch, gitToken, commitSHA, lb); err != nil {
 			return fmt.Errorf("git: %w", err)
 		}
 		logf("[deploy] cloned successfully")
+
+		// Copy env.example to .env as a starting point (if .env doesn't already exist)
+		envExamplePath := filepath.Join(repoDir, "env.example")
+		envPath := filepath.Join(repoDir, ".env")
+		if _, err := os.Stat(envExamplePath); err == nil {
+			if _, err := os.Stat(envPath); os.IsNotExist(err) {
+				logf("[deploy] copying env.example to .env...")
+				if data, readErr := os.ReadFile(envExamplePath); readErr == nil {
+					os.WriteFile(envPath, data, 0644)
+				}
+			}
+		}
 	}
 
-	// Write .env to repo root (where frameworks expect it)
+	// Write .env from control plane params
 	writeEnvFile(siteName, params)
 
 	// Write deploy script to file
@@ -365,7 +399,7 @@ func (e *JobEngine) runDeployScript(siteName string, params map[string]any, lb *
 	if _, err := os.Stat(workDir); os.IsNotExist(err) {
 		workDir = siteDir
 	}
-	cmd := exec.Command("/bin/bash", scriptPath)
+	cmd := exec.CommandContext(ctx, "/bin/bash", scriptPath)
 	cmd.Dir = workDir
 	cmd.Stdout = lb
 	cmd.Stderr = lb
@@ -373,7 +407,7 @@ func (e *JobEngine) runDeployScript(siteName string, params map[string]any, lb *
 	return cmd.Run()
 }
 
-func cloneRepo(repoDir, repoURL, branch, gitToken, commitSHA string, lb *LogBatcher) error {
+func cloneRepo(ctx context.Context, repoDir, repoURL, branch, gitToken, commitSHA string, lb *LogBatcher) error {
 	authenticatedURL := repoURL
 
 	// Use git token for GitHub private repos
@@ -384,21 +418,28 @@ func cloneRepo(repoDir, repoURL, branch, gitToken, commitSHA string, lb *LogBatc
 		)
 	}
 
+	// Normalise empty branch to "HEAD" so both fresh-clone and already-cloned paths
+	// behave consistently (checkout the remote's default branch).
+	ref := branch
+	if ref == "" {
+		ref = "HEAD"
+	}
+
 	if _, err := os.Stat(repoDir + "/.git"); os.IsNotExist(err) {
 		// Fresh clone
 		args := []string{"clone", "--depth=1"}
-		if branch != "" {
-			args = append(args, "-b", branch)
+		if ref != "HEAD" {
+			args = append(args, "-b", ref)
 		}
 		args = append(args, authenticatedURL, repoDir)
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Stdout = lb
 		cmd.Stderr = lb
 		return cmd.Run()
 	}
 
-	// Already cloned fetch and checkout
-	cmd := exec.Command("git", "fetch", "--depth=1", "origin", branch)
+	// Already cloned — fetch and checkout
+	cmd := exec.CommandContext(ctx, "git", "fetch", "--depth=1", "origin", ref)
 	cmd.Dir = repoDir
 	cmd.Stdout = lb
 	cmd.Stderr = lb
@@ -406,12 +447,12 @@ func cloneRepo(repoDir, repoURL, branch, gitToken, commitSHA string, lb *LogBatc
 		return err
 	}
 
-	checkoutRef := "origin/" + branch
+	checkoutRef := "origin/" + ref
 	if commitSHA != "" {
 		checkoutRef = commitSHA
 	}
 
-	cmd = exec.Command("git", "checkout", "-f", checkoutRef)
+	cmd = exec.CommandContext(ctx, "git", "checkout", "-f", checkoutRef)
 	cmd.Dir = repoDir
 	cmd.Stdout = lb
 	cmd.Stderr = lb
@@ -427,24 +468,26 @@ func orDefaultStr(s, def string) string {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-func createSiteDir(siteName string) error {
-	return run("mkdir", "-p", fmt.Sprintf("/opt/ekilie/sites/%s", siteName))
+func createSiteDir(ctx context.Context, siteName string) error {
+	return run(ctx, "mkdir", "-p", fmt.Sprintf("/opt/ekilie/sites/%s", siteName))
 }
 
-func removeSiteDir(siteName string) error {
-	return run("rm", "-rf", fmt.Sprintf("/opt/ekilie/sites/%s", siteName))
+func removeSiteDir(ctx context.Context, siteName string) error {
+	return run(ctx, "rm", "-rf", fmt.Sprintf("/opt/ekilie/sites/%s", siteName))
 }
 
-func writeNginxConfig(siteName, config string) error {
+func writeNginxConfig(ctx context.Context, siteName, config string) error {
 	path := fmt.Sprintf("/etc/nginx/sites-available/%s", siteName)
 	if err := writeFile(path, config); err != nil {
 		return err
 	}
-	// Validate and reload
-	if out, err := exec.Command("nginx", "-t").CombinedOutput(); err != nil {
+	// Validate config
+	if out, err := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); err != nil {
 		return fmt.Errorf("nginx validation failed: %s", string(out))
 	}
-	return run("systemctl", "reload", "nginx")
+	// Enable on boot and reload/start
+	exec.CommandContext(ctx, "systemctl", "enable", "nginx").Run()
+	return run(ctx, "systemctl", "reload-or-restart", "nginx")
 }
 
 func writeEnvFile(siteName string, params map[string]any) error {
@@ -457,8 +500,8 @@ func writeEnvFile(siteName string, params map[string]any) error {
 		return nil
 	}
 
-	// Default: write .env inside the repo root where frameworks expect it
-	envPath := fmt.Sprintf("/opt/ekilie/sites/%s/current/.env", siteName)
+	// Default: write .env at site root (widely expected location)
+	envPath := fmt.Sprintf("/opt/ekilie/sites/%s/.env", siteName)
 
 	// Allow deploy script to specify a custom path via env_path param
 	if customPath, ok := params["env_path"].(string); ok && customPath != "" {
@@ -466,7 +509,7 @@ func writeEnvFile(siteName string, params map[string]any) error {
 	}
 
 	// Ensure parent directory exists
-	parentDir := envPath[:len(envPath)-len("/.env")]
+	parentDir := filepath.Dir(envPath)
 	os.MkdirAll(parentDir, 0755)
 
 	var buf []byte
@@ -476,13 +519,13 @@ func writeEnvFile(siteName string, params map[string]any) error {
 	return os.WriteFile(envPath, buf, 0644)
 }
 
-func issueSSL(domain, email string) error {
+func issueSSL(ctx context.Context, domain, email string) error {
 	args := []string{"--nginx", "--non-interactive", "--agree-tos", "--redirect"}
 	if email != "" {
 		args = append(args, "--email", email)
 	}
 	args = append(args, "-d", domain)
-	return run("certbot", args...)
+	return run(ctx, "certbot", args...)
 }
 
 func addSSHKey(publicKey string) error {
@@ -492,7 +535,17 @@ func addSSHKey(publicKey string) error {
 	sshDir := "/root/.ssh"
 	os.MkdirAll(sshDir, 0700)
 
-	f, err := os.OpenFile(sshDir+"/authorized_keys", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	authorizedKeysPath := sshDir + "/authorized_keys"
+
+	// Read existing keys to avoid duplicates
+	if data, err := os.ReadFile(authorizedKeysPath); err == nil {
+		if strings.Contains(string(data), publicKey) {
+			// Key already exists no-op
+			return nil
+		}
+	}
+
+	f, err := os.OpenFile(authorizedKeysPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("open authorized_keys: %w", err)
 	}
@@ -508,18 +561,25 @@ func addSSHKey(publicKey string) error {
 
 const supervisorConfDir = "/etc/supervisor/conf.d"
 
-func installSupervisor() error {
-	if err := run("apt-get", "install", "-y", "supervisor"); err != nil {
+func installSupervisor(ctx context.Context) error {
+	if err := run(ctx, "apt-get", "install", "-y", "supervisor"); err != nil {
 		return err
 	}
-	if err := run("systemctl", "enable", "supervisor"); err != nil {
+	if err := run(ctx, "systemctl", "enable", "supervisor"); err != nil {
 		return err
 	}
-	return run("systemctl", "start", "supervisor")
+	return run(ctx, "systemctl", "start", "supervisor")
 }
 
 func daemonProgramName(siteName, name string) string {
 	return fmt.Sprintf("%s-%s", siteName, name)
+}
+
+func ensureUser(username string) {
+	if exec.Command("id", "-u", username).Run() == nil {
+		return // user already exists
+	}
+	exec.Command("useradd", "-r", "-s", "/bin/false", "-d", "/opt/ekilie", username).Run()
 }
 
 func createSupervisorConfig(siteName, name, command string, scale int, params map[string]any) error {
@@ -529,6 +589,8 @@ func createSupervisorConfig(siteName, name, command string, scale int, params ma
 	if scale < 1 {
 		scale = 1
 	}
+
+	ensureUser("ekilie")
 
 	progName := daemonProgramName(siteName, name)
 	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
@@ -595,13 +657,30 @@ func deleteSupervisorConfig(siteName, name string) error {
 	return nil
 }
 
-func restartSupervisorProgram(siteName, name string) error {
+func restartSupervisorProgram(ctx context.Context, siteName, name string) error {
 	progName := daemonProgramName(siteName, name)
-	return run("supervisorctl", "restart", progName)
+	return run(ctx, "supervisorctl", "restart", progName)
 }
 
-func run(name string, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+// cleanupSupervisorForSite removes all supervisor programs and configs
+// associated with the given site name. Called when a site is deleted.
+func cleanupSupervisorForSite(siteName string) {
+	pattern := filepath.Join(supervisorConfDir, siteName+"-*.conf")
+	files, _ := filepath.Glob(pattern)
+	for _, f := range files {
+		progName := strings.TrimSuffix(filepath.Base(f), ".conf")
+		exec.Command("supervisorctl", "stop", progName).Run()
+		exec.Command("supervisorctl", "remove", progName).Run()
+		os.Remove(f)
+	}
+	if len(files) > 0 {
+		exec.Command("supervisorctl", "update").Run()
+	}
+}
+
+func run(ctx context.Context, name string, args ...string) error {
+	// Combine parent context (for agent shutdown / job cancellation) with a timeout.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ekilie/ekilied/internals/config"
+	"github.com/ekilie/ekilied/internals/dtos"
 	"github.com/ekilie/ekilied/internals/models"
 	"gorm.io/gorm"
 )
@@ -48,11 +49,25 @@ func (e *Ekilied) Config() *config.Config {
 }
 
 func (e *Ekilied) Register() (sessionToken, agentID string, err error) {
-	return e.ws.Register(e.ctx)
+	return e.ws.Register(e.ctx, e.capabilityDTOs())
+}
+
+func (e *Ekilied) capabilityDTOs() []dtos.Capability {
+	return []dtos.Capability{
+		{Name: "nginx", Available: commandExists("nginx", "-v")},
+		{Name: "node", Available: commandExists("node", "--version")},
+		{Name: "npm", Available: commandExists("npm", "--version")},
+		{Name: "docker", Available: commandExists("docker", "--version")},
+		{Name: "certbot", Available: commandExists("certbot", "--version")},
+		{Name: "git", Available: commandExists("git", "--version")},
+		{Name: "systemd", Available: commandExists("systemctl", "--version")},
+		{Name: "php", Available: commandExists("php", "--version")},
+		{Name: "composer", Available: commandExists("composer", "--version")},
+	}
 }
 
 func (e *Ekilied) RegisterAndSave() error {
-	sessionToken, agentID, err := e.ws.Register(e.ctx)
+	sessionToken, agentID, err := e.ws.Register(e.ctx, e.capabilityDTOs())
 	if err != nil {
 		return fmt.Errorf("registration failed: %w", err)
 	}
@@ -134,6 +149,10 @@ func (e *Ekilied) updateCheckLoop() {
 			log.Printf("[update] new version available: %s", release.TagName)
 			if err := SelfUpdate(repo, release); err != nil {
 				log.Printf("[update] failed: %v", err)
+			} else {
+				log.Printf("[update] updated, restarting...")
+				exec.Command("systemctl", "restart", "ekilied").Start()
+				return
 			}
 		}
 	}
