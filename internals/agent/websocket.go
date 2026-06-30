@@ -15,7 +15,15 @@ import (
 	"github.com/ekilie/ekilied/internals/dtos"
 )
 
+// JobHandler is the callback signature for when a job trigger arrives via WebSocket.
+// The handler receives the context and the job ID; it should fetch and execute the
+// job via the HTTP claim endpoint.
 type JobHandler func(ctx context.Context, jobID uint)
+
+// WSClient manages the WebSocket connection to the control plane.
+// It handles connection lifecycle (connect, reconnect, disconnect),
+// message dispatch, heartbeats, and provides HTTP helper methods
+// for job claiming, log streaming, and job completion.
 type WSClient struct {
 	cfg       *config.Config
 	client    *http.Client
@@ -26,10 +34,13 @@ type WSClient struct {
 	docker    *DockerService
 }
 
+// Connected reports whether the WebSocket connection is currently established.
 func (c *WSClient) Connected() bool {
 	return c.connected.Load()
 }
 
+// NewWSClient creates a new WSClient. The onJob callback is invoked when
+// a job trigger message is received. If nil, a no-op is used.
 func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
 	if onJob == nil {
 		onJob = func(ctx context.Context, jobID uint) {}
@@ -42,6 +53,7 @@ func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
 	}
 }
 
+// sendError queues an error message to be sent over the WebSocket egress channel.
 func (c *WSClient) sendError(errType, message string) {
 	msg, _ := json.Marshal(map[string]any{
 		"v": 1, "type": "error",
@@ -56,17 +68,22 @@ func (c *WSClient) sendError(errType, message string) {
 	}
 }
 
+// SetDockerService attaches a DockerService for handling container-related
+// WebSocket messages (list_containers, log_stream).
 func (c *WSClient) SetDockerService(docker *DockerService) {
 	c.docker = docker
 }
 
 // ── Registration (always HTTP) ───────────────────────────────────────────
 
+// Register performs the one-time registration handshake with the control plane.
+// It sends the registration token and receives a session token, WebSocket URL,
+// and poll interval in return.
 func (c *WSClient) Register(ctx context.Context) (sessionToken, agentID string, err error) {
 	reqBody, _ := json.Marshal(dtos.RegisterRequest{
 		ServerID:     c.cfg.ServerID,
 		Token:        c.cfg.RegistrationToken,
-		AgentVersion: "1.0.0",
+		AgentVersion: config.Version,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.cfg.APIURL+"/agents/register", bytes.NewReader(reqBody))
@@ -108,6 +125,9 @@ func (c *WSClient) Register(ctx context.Context) (sessionToken, agentID string, 
 
 // ── WebSocket connect loop (primary) ─────────────────────────────────────
 
+// Connect runs the WebSocket connection loop. It attempts to connect and,
+// if the connection drops, waits 5 seconds before retrying. It blocks
+// until the context is cancelled.
 func (c *WSClient) Connect(ctx context.Context) {
 	for {
 		select {
@@ -123,6 +143,8 @@ func (c *WSClient) Connect(ctx context.Context) {
 	}
 }
 
+// connectOnce dials the WebSocket URL, sets up read/egress/ping goroutines,
+// and processes incoming messages until the connection is closed.
 func (c *WSClient) connectOnce(ctx context.Context) error {
 	url := c.cfg.WsURL + "?token=" + c.cfg.SessionToken
 
@@ -195,6 +217,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 		switch envelope.Type {
 		case "job":
+			// Lightweight job trigger — agent fetches full details via HTTP.
 			var job struct {
 				JobID uint `json:"job_id"`
 			}
@@ -206,6 +229,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			go c.onJob(ctx, job.JobID)
 
 		case "token_rotated":
+			// Session token rotation from control plane.
 			var payload struct {
 				NewToken string `json:"new_token"`
 			}
@@ -219,6 +243,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			log.Println("ws job cancelled (handling pending)")
 
 		case "list_containers":
+			// List Docker containers on this server and send back via egress.
 			if c.docker == nil {
 				log.Println("docker not available for list_containers")
 				c.sendError("docker_not_available", "Docker is not installed on this server")
@@ -246,6 +271,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			}
 
 		case "log_stream":
+			// Start streaming logs from a Docker container to the control plane.
 			if c.docker == nil {
 				log.Println("docker not available for log_stream")
 				c.sendError("docker_not_available", "Docker is not installed on this server")
@@ -306,6 +332,8 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 // ── Heartbeat (prefer WS, fallback HTTP) ─────────────────────────────────
 
+// SendHeartbeat attempts to send metrics over the WebSocket egress channel.
+// If the channel is full, it falls back to an HTTP POST to /agents/heartbeat.
 func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken string, metrics dtos.HeartbeatMetrics) error {
 	payload, _ := json.Marshal(dtos.HeartbeatRequest{
 		AgentID:  agentID,
@@ -348,8 +376,9 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 	return nil
 }
 
-// ── Job HTTP helpers (used by job engine as WS fallback) ─────────────────
+// ── Job HTTP helpers (used by job engine) ────────────────────────────────
 
+// PollJobs fetches all pending jobs from the control plane via GET /agents/jobs.
 func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
 	req, _ := http.NewRequestWithContext(ctx, "GET", c.cfg.APIURL+"/agents/jobs", nil)
 	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
@@ -369,9 +398,9 @@ func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
 	return result.Data, nil
 }
 
+// ClaimJob atomically claims and fetches a job via POST /agents/jobs/:id/claim.
+// The backend marks the job as accepted and returns full details in one round trip.
 func (c *WSClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, error) {
-	// POST /agents/jobs/:id/claim atomically marks the job as accepted
-	// and returns the full job details in a single round trip.
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		fmt.Sprintf("%s/agents/jobs/%d/claim", c.cfg.APIURL, jobID), nil)
 	if err != nil {
@@ -407,6 +436,8 @@ func (c *WSClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, err
 	return apiResp.Data, nil
 }
 
+// AcceptJob marks a job as accepted via POST /agents/jobs/:id/accept.
+// Deprecated: Use ClaimJob instead, which atomically claims and fetches job details.
 func (c *WSClient) AcceptJob(ctx context.Context, jobID uint) error {
 	req, _ := http.NewRequestWithContext(ctx, "POST",
 		fmt.Sprintf("%s/agents/jobs/%d/accept", c.cfg.APIURL, jobID), nil)
@@ -424,6 +455,7 @@ func (c *WSClient) AcceptJob(ctx context.Context, jobID uint) error {
 	return nil
 }
 
+// StreamLogs sends a batch of log lines for a job via POST /agents/jobs/:id/logs.
 func (c *WSClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogLine) error {
 	body, _ := json.Marshal(dtos.StreamLogsRequest{Lines: lines})
 
@@ -445,6 +477,7 @@ func (c *WSClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogL
 	return nil
 }
 
+// CompleteJob marks a job as completed (success or failed) via POST /agents/jobs/:id/complete.
 func (c *WSClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg, step string, result any) error {
 	body, _ := json.Marshal(dtos.CompleteJobRequest{
 		Status: status, Error: errorMsg, Step: step, Result: result,
