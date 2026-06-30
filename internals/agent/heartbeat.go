@@ -30,7 +30,7 @@ func collectMetrics() dtos.HeartbeatMetrics {
 		MemoryPercent: 0.0,
 		DiskPercent:   0.0,
 		UptimeSeconds: int64(time.Since(startTime).Seconds()),
-		AgentVersion:  "1.0.0",
+		AgentVersion:  version,
 		Hostname:      hostname,
 	}
 
