@@ -142,9 +142,24 @@ func splitLines(s string) []string {
 // ── Job engine ──────────────────────────────────────────────────────
 
 type JobEngine struct {
-	client   *WSClient
-	deployLk *DeployLock
-	active   sync.Map // map[uint]struct{} — tracks actively executing job IDs
+	client     *WSClient
+	deployLk   *DeployLock
+	active     sync.Map // map[uint]struct{} — tracks actively executing job IDs
+	dispatched sync.Map // map[uint]struct{} — tracks jobs already WS-triggered so poll skips them
+}
+
+func (e *JobEngine) IsDispatched(jobID uint) bool {
+	_, loaded := e.dispatched.Load(jobID)
+	return loaded
+}
+
+func (e *JobEngine) markDispatched(jobID uint) bool {
+	_, loaded := e.dispatched.LoadOrStore(jobID, struct{}{})
+	return !loaded // true if this goroutine was first to mark it
+}
+
+func (e *JobEngine) clearDispatched(jobID uint) {
+	e.dispatched.Delete(jobID)
 }
 
 func NewJobEngine(client *WSClient) *JobEngine {
@@ -155,10 +170,19 @@ func NewJobEngine(client *WSClient) *JobEngine {
 }
 
 func (e *JobEngine) HandleJobTrigger(ctx context.Context, jobID uint) {
-	job, err := e.client.FetchJob(ctx, jobID)
+	// Mark as dispatched so the poll loop won't also pick it up.
+	// If already dispatched (race between WS and poll), skip entirely.
+	if !e.markDispatched(jobID) {
+		log.Printf("job %d already dispatched, skipping duplicate trigger", jobID)
+		return
+	}
+
+	// Atomically claim the job (marks as accepted on backend) and get full details.
+	// Single HTTP call — backend is the source of truth.
+	job, err := e.client.ClaimJob(ctx, jobID)
 	if err != nil {
-		log.Printf("handle job trigger %d: fetch failed: %v", jobID, err)
-		// If fetch fails (e.g. network error), don't execute with stale data
+		log.Printf("handle job trigger %d: claim failed: %v", jobID, err)
+		e.clearDispatched(jobID)
 		return
 	}
 
@@ -174,13 +198,13 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		log.Printf("job %d already executing, skipping duplicate", jobID)
 		return
 	}
-	defer e.active.Delete(jobID)
+	defer func() {
+		e.active.Delete(jobID)
+		e.clearDispatched(jobID)
+	}()
 
-	// Accept the job
-	if err := e.client.AcceptJob(ctx, jobID); err != nil {
-		log.Printf("accept job %d failed: %v", jobID, err)
-		return
-	}
+	// Job is already claimed (accepted) by HandleJobTrigger → ClaimJob.
+	// The backend status is the source of truth.
 
 	var params map[string]any
 	json.Unmarshal(rawParams, &params)

@@ -179,6 +179,10 @@ func (e *Ekilied) httpPollLoop() {
 				continue
 			}
 			for _, job := range jobs {
+				if e.engine.IsDispatched(job.ID) {
+					log.Printf("polled job %d already dispatched via WS, skipping", job.ID)
+					continue
+				}
 				log.Printf("polled job: id=%d action=%s", job.ID, job.Action)
 				go e.engine.HandleJobTrigger(e.ctx, job.ID)
 			}

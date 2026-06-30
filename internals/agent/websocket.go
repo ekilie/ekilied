@@ -369,9 +369,11 @@ func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
 	return result.Data, nil
 }
 
-func (c *WSClient) FetchJob(ctx context.Context, jobID uint) (*dtos.JobItem, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("%s/agents/jobs/%d", c.cfg.APIURL, jobID), nil)
+func (c *WSClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, error) {
+	// POST /agents/jobs/:id/claim atomically marks the job as accepted
+	// and returns the full job details in a single round trip.
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		fmt.Sprintf("%s/agents/jobs/%d/claim", c.cfg.APIURL, jobID), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -379,12 +381,15 @@ func (c *WSClient) FetchJob(ctx context.Context, jobID uint) (*dtos.JobItem, err
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch job %d: %w", jobID, err)
+		return nil, fmt.Errorf("claim job %d: %w", jobID, err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusConflict {
+		return nil, fmt.Errorf("claim job %d: already claimed", jobID)
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch job %d: HTTP %d", jobID, resp.StatusCode)
+		return nil, fmt.Errorf("claim job %d: HTTP %d", jobID, resp.StatusCode)
 	}
 
 	var apiResp struct {
@@ -396,7 +401,7 @@ func (c *WSClient) FetchJob(ctx context.Context, jobID uint) (*dtos.JobItem, err
 	}
 
 	if !apiResp.Success || apiResp.Data == nil {
-		return nil, fmt.Errorf("fetch job %d: not found", jobID)
+		return nil, fmt.Errorf("claim job %d: no data returned", jobID)
 	}
 
 	return apiResp.Data, nil
