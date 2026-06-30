@@ -68,7 +68,7 @@ func removeSSHKey(publicKey string) error {
 
 // keyExists checks whether any line in data matches the given key (trimmed comparison).
 func keyExists(data, key string) bool {
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		if strings.TrimSpace(line) == strings.TrimSpace(key) {
 			return true
 		}
