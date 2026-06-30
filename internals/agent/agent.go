@@ -10,6 +10,7 @@ import (
 
 	"github.com/ekilie/ekilied/internals/config"
 	"github.com/ekilie/ekilied/internals/dtos"
+	"github.com/ekilie/ekilied/internals/jobengine"
 	"github.com/ekilie/ekilied/internals/models"
 	"gorm.io/gorm"
 )
@@ -18,7 +19,7 @@ type Ekilied struct {
 	cfg    *config.Config
 	db     *gorm.DB
 	ws     *WSClient
-	engine *JobEngine
+	engine *jobengine.JobEngine
 	docker *DockerService
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -35,11 +36,11 @@ func New(cfg *config.Config, db *gorm.DB) (*Ekilied, error) {
 		cancel: cancel,
 	}
 
-	// WS client with job handler callback
+	// Create engine first so the WS callback can reference it.
+	e.engine = jobengine.NewJobEngine(e.ws)
 	e.ws = NewWSClient(cfg, func(jobCtx context.Context, jobID uint) {
 		e.engine.HandleJobTrigger(jobCtx, jobID)
 	})
-	e.engine = NewJobEngine(e.ws)
 
 	return e, nil
 }
@@ -138,7 +139,7 @@ func (e *Ekilied) updateCheckLoop() {
 		case <-e.ctx.Done():
 			return
 		case <-ticker.C:
-			release, available, err := CheckForUpdate(repo, config.Version)
+			release, available, err := jobengine.CheckForUpdate(repo, config.Version)
 			if err != nil {
 				log.Printf("[update] check failed: %v", err)
 				continue
@@ -147,7 +148,7 @@ func (e *Ekilied) updateCheckLoop() {
 				continue
 			}
 			log.Printf("[update] new version available: %s", release.TagName)
-			if err := SelfUpdate(repo, release); err != nil {
+			if err := jobengine.SelfUpdate(repo, release); err != nil {
 				log.Printf("[update] failed: %v", err)
 			} else {
 				log.Printf("[update] updated, restarting...")
