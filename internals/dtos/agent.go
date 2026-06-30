@@ -38,6 +38,17 @@ type HeartbeatMetrics struct {
 	LoadAvg       []float64 `json:"load_avg,omitempty"`
 	UptimeSeconds int64     `json:"uptime_seconds"`
 	AgentVersion  string    `json:"agent_version"`
+
+	// New fields
+	CPUCount         int    `json:"cpu_count,omitempty"`
+	MemoryTotalBytes uint64 `json:"memory_total_bytes,omitempty"`
+	MemoryUsedBytes  uint64 `json:"memory_used_bytes,omitempty"`
+	MemoryAvailBytes uint64 `json:"memory_avail_bytes,omitempty"`
+	DiskTotalBytes   uint64 `json:"disk_total_bytes,omitempty"`
+	DiskUsedBytes    uint64 `json:"disk_used_bytes,omitempty"`
+	Hostname         string `json:"hostname,omitempty"`
+	Platform         string `json:"platform,omitempty"`
+	KernelArch       string `json:"kernel_arch,omitempty"`
 }
 
 type HeartbeatResponse struct {
