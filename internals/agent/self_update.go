@@ -16,16 +16,6 @@ import (
 	"time"
 )
 
-var (
-	version = "0.1.0"
-	commit  = "dev"
-)
-
-func SetVersion(v, c string) {
-	version = v
-	commit = c
-}
-
 type GitHubRelease struct {
 	TagName string `json:"tag_name"`
 	Assets  []struct {

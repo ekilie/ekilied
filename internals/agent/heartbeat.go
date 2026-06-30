@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/ekilie/ekilied/internals/config"
 	"github.com/ekilie/ekilied/internals/dtos"
 	"github.com/ekilie/ekilied/internals/models"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -30,7 +31,7 @@ func collectMetrics() dtos.HeartbeatMetrics {
 		MemoryPercent: 0.0,
 		DiskPercent:   0.0,
 		UptimeSeconds: int64(time.Since(startTime).Seconds()),
-		AgentVersion:  version,
+		AgentVersion:  config.Version,
 		Hostname:      hostname,
 	}
 

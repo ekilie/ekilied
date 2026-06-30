@@ -9,6 +9,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Version and Commit are set at build time via -ldflags.
+var (
+	Version = "0.1.0"
+	Commit  = "dev"
+)
+
 type FlagOverrides struct {
 	APIURL            string
 	WsURL             string
@@ -94,20 +100,20 @@ type Config struct {
 	LogLevel string
 
 	// Auto-update
-	AutoUpdate         bool `yaml:"auto_update"`
+	AutoUpdate          bool `yaml:"auto_update"`
 	UpdateCheckInterval int  `yaml:"update_check_interval"`
 }
 
 func Defaults() *Config {
 	return &Config{
-		PollInterval:      5,
-		HeartbeatInterval: 30,
-		DBPath:            "/opt/ekilie/agent/agent.db",
-		DataDir:           "/opt/ekilie/agent",
-		LogDir:            "/var/log/ekilie",
-		SocketPath:        "/var/run/ekilie/agent.sock",
-		LogLevel:          "info",
-		AutoUpdate:         true,
+		PollInterval:        5,
+		HeartbeatInterval:   30,
+		DBPath:              "/opt/ekilie/agent/agent.db",
+		DataDir:             "/opt/ekilie/agent",
+		LogDir:              "/var/log/ekilie",
+		SocketPath:          "/var/run/ekilie/agent.sock",
+		LogLevel:            "info",
+		AutoUpdate:          true,
 		UpdateCheckInterval: 86400,
 	}
 }

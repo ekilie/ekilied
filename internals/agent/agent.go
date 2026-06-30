@@ -68,7 +68,7 @@ func (e *Ekilied) RegisterAndSave() error {
 		WsURL:        e.cfg.WsURL,
 		PollInterval: e.cfg.PollInterval,
 		Connected:    true,
-		Version:      "1.0.0",
+		Version:      config.Version,
 	})
 	log.Printf("identity persisted: agent_id=%s", agentID)
 	return nil
@@ -123,7 +123,7 @@ func (e *Ekilied) updateCheckLoop() {
 		case <-e.ctx.Done():
 			return
 		case <-ticker.C:
-			release, available, err := CheckForUpdate(repo, version)
+			release, available, err := CheckForUpdate(repo, config.Version)
 			if err != nil {
 				log.Printf("[update] check failed: %v", err)
 				continue
