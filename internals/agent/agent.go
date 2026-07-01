@@ -36,11 +36,10 @@ func New(cfg *config.Config, db *gorm.DB) (*Ekilied, error) {
 		cancel: cancel,
 	}
 
-	// Create engine first so the WS callback can reference it.
-	e.engine = jobengine.NewJobEngine(e.ws)
-	e.ws = NewWSClient(cfg, func(jobCtx context.Context, jobID uint) {
+	e.ws = NewWSClient(cfg, ctx, func(jobCtx context.Context, jobID uint) {
 		e.engine.HandleJobTrigger(jobCtx, jobID)
 	})
+	e.engine = jobengine.NewJobEngine(e.ws)
 
 	return e, nil
 }

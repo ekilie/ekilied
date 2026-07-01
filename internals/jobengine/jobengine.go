@@ -18,6 +18,9 @@ import (
 	"github.com/ekilie/ekilied/internals/dtos"
 )
 
+// DefaultMaxConcurrentJobs limits how many jobs can run simultaneously.
+const DefaultMaxConcurrentJobs = 5
+
 // JobClient is the interface the job engine needs to communicate
 // with the control plane. Implemented by agent.WSClient.
 type JobClient interface {
@@ -146,6 +149,7 @@ func (lb *LogBatcher) Close() {
 	lb.cancel()
 }
 
+
 // ── Job engine ──────────────────────────────────────────────────────
 
 // JobEngine receives job triggers, claims them from the control plane,
@@ -153,8 +157,9 @@ func (lb *LogBatcher) Close() {
 type JobEngine struct {
 	client     JobClient
 	deployLk   *DeployLock
-	active     sync.Map // map[uint]struct{} — tracks actively executing job IDs
-	dispatched sync.Map // map[uint]struct{} — tracks jobs already WS-triggered so poll skips them
+	active     sync.Map      // map[uint]struct{} — tracks actively executing job IDs
+	dispatched sync.Map      // map[uint]struct{} — tracks jobs already WS-triggered so poll skips them
+	semaphore  chan struct{} // limits concurrent job executions
 }
 
 // IsDispatched reports whether a job has already been dispatched (via WS or poll).
@@ -175,8 +180,9 @@ func (e *JobEngine) clearDispatched(jobID uint) {
 // NewJobEngine creates a new JobEngine with the given control plane client.
 func NewJobEngine(client JobClient) *JobEngine {
 	return &JobEngine{
-		client:   client,
-		deployLk: NewDeployLock(),
+		client:    client,
+		deployLk:  NewDeployLock(),
+		semaphore: make(chan struct{}, DefaultMaxConcurrentJobs),
 	}
 }
 
@@ -214,6 +220,17 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	defer func() {
 		e.active.Delete(jobID)
 		e.clearDispatched(jobID)
+	}()
+
+	// Acquire semaphore slot (blocks if at capacity)
+	select {
+	case e.semaphore <- struct{}{}:
+	case <-ctx.Done():
+		log.Printf("job %d cancelled while waiting for semaphore", jobID)
+		return
+	}
+	defer func() {
+		<-e.semaphore
 	}()
 
 	var params map[string]any

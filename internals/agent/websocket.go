@@ -27,11 +27,13 @@ type JobHandler func(ctx context.Context, jobID uint)
 // for job claiming, log streaming, and job completion.
 type WSClient struct {
 	cfg       *config.Config
+	rootCtx   context.Context
 	client    *http.Client
 	connMu    sync.Mutex
 	conn      *websocket.Conn
 	connected atomic.Bool
 	egress    chan []byte
+	egressLow chan []byte
 	onJob     JobHandler
 	docker    *DockerService
 }
@@ -55,15 +57,17 @@ func (c *WSClient) Connected() bool {
 
 // NewWSClient creates a new WSClient. The onJob callback is invoked when
 // a job trigger message is received. If nil, a no-op is used.
-func NewWSClient(cfg *config.Config, onJob JobHandler) *WSClient {
+func NewWSClient(cfg *config.Config, rootCtx context.Context, onJob JobHandler) *WSClient {
 	if onJob == nil {
 		onJob = func(ctx context.Context, jobID uint) {}
 	}
 	return &WSClient{
-		cfg:    cfg,
-		client: &http.Client{Timeout: 30 * time.Second},
-		egress: make(chan []byte, 64),
-		onJob:  onJob,
+		cfg:       cfg,
+		rootCtx:   rootCtx,
+		client:    &http.Client{Timeout: 30 * time.Second},
+		egress:    make(chan []byte, 32),
+		egressLow: make(chan []byte, 128),
+		onJob:     onJob,
 	}
 }
 
@@ -186,16 +190,44 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 				log.Printf("ws read error: %v", err)
 				return
 			}
-			readCh <- msg
+			select {
+			case readCh <- msg:
+			default:
+				log.Printf("ws read buffer full (cap=%d), dropping message", cap(readCh))
+			}
 		}
 	}()
 
 	// Egress pump — sends heartbeats and log messages
 	go func() {
-		for msg := range c.egress {
-			if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
-				log.Printf("ws write error: %v", err)
+		for {
+			select {
+			case <-ctx.Done():
 				return
+			case msg := <-c.egress:
+				// High priority: write immediately
+				if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+					log.Printf("ws write error: %v", err)
+					return
+				}
+			case msg := <-c.egressLow:
+				// Low priority: drain any pending high-priority messages first
+				for {
+					select {
+					case high := <-c.egress:
+						if err := conn.Write(ctx, websocket.MessageText, high); err != nil {
+							log.Printf("ws write error: %v", err)
+							return
+						}
+					default:
+						goto writeLow
+					}
+				}
+			writeLow:
+				if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+					log.Printf("ws write error: %v", err)
+					return
+				}
 			}
 		}
 	}()
@@ -241,7 +273,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 				continue
 			}
 			log.Printf("ws job trigger received: id=%d", job.JobID)
-			go c.onJob(ctx, job.JobID)
+			go c.onJob(c.rootCtx, job.JobID)
 
 		case "token_rotated":
 			// Session token rotation from control plane.
@@ -281,7 +313,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 				},
 			})
 			select {
-			case c.egress <- msg:
+			case c.egressLow <- msg:
 			default:
 			}
 
@@ -320,7 +352,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 						},
 					})
 					select {
-					case c.egress <- msg:
+					case c.egressLow <- msg:
 					default:
 					}
 				}
