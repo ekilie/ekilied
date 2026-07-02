@@ -362,33 +362,72 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		execErr = restartSupervisorProgram(ctx, siteName, name)
 
 	case "diagnostics":
-		writeLog("[diag] running diagnostics...")
-		started := time.Now()
-		for i := 1; i <= 5; i++ {
-			time.Sleep(100 * time.Millisecond)
-			writeLog("[diag] step %d/5 — checking subsystem %d...", i, i)
-			lb.mu.Lock()
-			for j := range lb.lines {
-				if j >= len(lb.lines)-1 {
-					continue
-				}
-				lb.lines[j].Step = fmt.Sprintf("step_%d", i)
+		writeLog("[diag] starting communication test...")
+		diagStarted := time.Now()
+
+		phases := []struct {
+			name   string
+			logs   []string
+			sleep  time.Duration
+		}{
+			{"Acquiring deployment lock", []string{
+				"[deploy] attempting lock for site 'diagnostics'...",
+				"[deploy] lock acquired (deploy-token: diag_%d)",
+			}, 150 * time.Millisecond},
+			{"Preparing workspace", []string{
+				"[deploy] site dir: /opt/ekilie/sites/diagnostics",
+				"[deploy] creating workspace structure...",
+				"[deploy] workspace ready",
+			}, 100 * time.Millisecond},
+			{"Cloning repository", []string{
+				"[git] cloning https://github.com/ekilie/diagnostics.git [main]...",
+				"[git] remote: Enumerating objects: 42, done.",
+				"[git] resolving deltas: 100%% (21/21), done.",
+			}, 200 * time.Millisecond},
+			{"Installing dependencies", []string{
+				"[build] npm ci --production",
+				"[build] added 1,234 packages in 3.2s",
+			}, 150 * time.Millisecond},
+			{"Running build", []string{
+				"[build] npm run build",
+				"[build] ✓ 42 modules transformed",
+				"[build] dist/index.html      2.1 kB",
+			}, 200 * time.Millisecond},
+			{"Restarting service", []string{
+				"[service] stopping diagnostics...",
+				"[service] starting diagnostics...",
+				"[service] service diagnostics started (pid: %d)",
+			}, 150 * time.Millisecond},
+			{"Running health check", []string{
+				"[health] probing http://localhost:3000/health...",
+				"[health] HTTP 200 — 4ms",
+				"[health] status: healthy",
+			}, 100 * time.Millisecond},
+		}
+
+		for _, phase := range phases {
+			writeLog("[diag] phase: %s", phase.name)
+			for _, line := range phase.logs {
+				time.Sleep(phase.sleep / time.Duration(len(phase.logs)+1))
+				writeLog(line, os.Getpid())
 			}
-			lb.mu.Unlock()
 			lb.flushNow()
 		}
-		timing := map[string]any{
-			"total_ms": time.Since(started).Milliseconds(),
-			"steps":    5,
+
+		duration := time.Since(diagStarted)
+		writeLog("[diag] communication test complete in %v", duration)
+		lb.flushNow()
+
+		result := map[string]interface{}{
+			"total_ms": duration.Milliseconds(),
 			"ok":       true,
 			"version":  config.Version,
 			"hostname": "",
 		}
 		if h, err := os.Hostname(); err == nil {
-			timing["hostname"] = h
+			result["hostname"] = h
 		}
-		lb.flushNow()
-		if err := e.client.CompleteJob(ctx, jobID, "success", "", action, timing); err != nil {
+		if err := e.client.CompleteJob(ctx, jobID, "success", "", action, result); err != nil {
 			log.Printf("complete job %d failed: %v", jobID, err)
 		}
 		return
