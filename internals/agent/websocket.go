@@ -43,6 +43,8 @@ type WSClient struct {
 	docker    *DockerService
 }
 
+func ts() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
 func (c *WSClient) setConn(conn *websocket.Conn) {
 	c.connMu.Lock()
 	c.conn = conn
@@ -160,13 +162,17 @@ func (c *WSClient) Connect(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("[ws] [ts=%s] connect loop exiting (context done)", ts())
 			return
 		default:
 		}
 
+		log.Printf("[ws] [ts=%s] attempting connection to %s", ts(), c.cfg.WsURL)
 		if err := c.connectOnce(ctx); err != nil {
-			log.Printf("ws disconnected: %v — retrying in 5s", err)
+			log.Printf("[ws] [ts=%s] disconnected: %v — retrying in 5s", ts(), err)
 			time.Sleep(5 * time.Second)
+		} else {
+			log.Printf("[ws] [ts=%s] connectOnce returned nil (shouldn't happen)", ts())
 		}
 	}
 }
@@ -176,6 +182,7 @@ func (c *WSClient) Connect(ctx context.Context) {
 func (c *WSClient) connectOnce(ctx context.Context) error {
 	url := c.cfg.WsURL + "?token=" + c.cfg.SessionToken
 
+	log.Printf("[ws] [ts=%s] dialing %s", ts(), url)
 	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"User-Agent": []string{"ekilied/1.0"},
@@ -184,39 +191,49 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
+	log.Printf("[ws] [ts=%s] connected", ts())
 
 	c.setConn(conn)
 	c.connected.Store(true)
-	log.Println("ws connected")
 
 	// Read pump — receives messages from control plane
 	readCh := make(chan []byte, 64)
 	go func() {
-		defer close(readCh)
+		defer func() {
+			log.Printf("[ws] [ts=%s] read pump exiting", ts())
+			close(readCh)
+		}()
 		for {
 			_, msg, err := conn.Read(ctx)
 			if err != nil {
-				log.Printf("ws read error: %v", err)
+				closeStatus := websocket.CloseStatus(err)
+				if closeStatus == -1 {
+					log.Printf("[ws] [ts=%s] read error: %v", ts(), err)
+				} else {
+					log.Printf("[ws] [ts=%s] connection closed (status=%d)", ts(), closeStatus)
+				}
 				return
 			}
+			log.Printf("[ws] [ts=%s] recv %d bytes", ts(), len(msg))
 			select {
 			case readCh <- msg:
 			default:
-				log.Printf("ws read buffer full (cap=%d), dropping message", cap(readCh))
+				log.Printf("[ws] [ts=%s] read buffer full (cap=%d), dropping message", ts(), cap(readCh))
 			}
 		}
 	}()
 
 	// Egress pump — sends heartbeats and log messages
 	go func() {
+		defer log.Printf("[ws] [ts=%s] egress pump exiting", ts())
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case msg := <-c.egress:
-				// High priority: write immediately
+				log.Printf("[ws] [ts=%s] send (high) %d bytes", ts(), len(msg))
 				if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
-					log.Printf("ws write error: %v", err)
+					log.Printf("[ws] [ts=%s] write error (high): %v", ts(), err)
 					return
 				}
 			case msg := <-c.egressLow:
@@ -224,8 +241,9 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 				for {
 					select {
 					case high := <-c.egress:
+						log.Printf("[ws] [ts=%s] send (high->low drain) %d bytes", ts(), len(high))
 						if err := conn.Write(ctx, websocket.MessageText, high); err != nil {
-							log.Printf("ws write error: %v", err)
+							log.Printf("[ws] [ts=%s] write error (drain): %v", ts(), err)
 							return
 						}
 					default:
@@ -233,8 +251,9 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 					}
 				}
 			writeLow:
+				log.Printf("[ws] [ts=%s] send (low) %d bytes", ts(), len(msg))
 				if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
-					log.Printf("ws write error: %v", err)
+					log.Printf("[ws] [ts=%s] write error (low): %v", ts(), err)
 					return
 				}
 			}
@@ -243,17 +262,22 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 	// Periodic ping to keep the connection alive
 	pingCtx, pingCancel := context.WithCancel(ctx)
-	defer pingCancel()
+	defer func() {
+		log.Printf("[ws] [ts=%s] ping goroutine cancelled", ts())
+		pingCancel()
+	}()
 	go func() {
 		pingTicker := time.NewTicker(30 * time.Second)
 		defer pingTicker.Stop()
 		for {
 			select {
 			case <-pingTicker.C:
+				log.Printf("[ws] [ts=%s] sending ping", ts())
 				if err := conn.Ping(pingCtx); err != nil {
-					log.Printf("ws ping error: %v", err)
+					log.Printf("[ws] [ts=%s] ping error: %v", ts(), err)
 					return
 				}
+				log.Printf("[ws] [ts=%s] ping ok (pong received)", ts())
 			case <-pingCtx.Done():
 				return
 			}
@@ -267,35 +291,36 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			Payload json.RawMessage `json:"payload"`
 		}
 		if err := json.Unmarshal(msg, &envelope); err != nil {
-			log.Printf("ws unmarshal error: %v", err)
+			log.Printf("[ws] [ts=%s] unmarshal error: %v", ts(), err)
 			continue
 		}
 
+		t := ts()
+		log.Printf("[ws] [ts=%s] recv type=%s payload=%d bytes", t, envelope.Type, len(envelope.Payload))
+
 		switch envelope.Type {
 		case "job":
-			// Legacy lightweight job trigger — agent fetches full details via HTTP.
 			var job struct {
 				JobID uint `json:"job_id"`
 			}
 			if err := json.Unmarshal(envelope.Payload, &job); err != nil {
-				log.Printf("ws job unmarshal error: %v", err)
+				log.Printf("[ws] [ts=%s] job unmarshal error: %v", t, err)
 				continue
 			}
-			log.Printf("ws job trigger received: id=%d", job.JobID)
+			log.Printf("[ws] [ts=%s] job trigger: id=%d", t, job.JobID)
 			go c.onJob(c.rootCtx, job.JobID)
 
 		case "job_full":
-			// Full job payload — agent executes immediately, no HTTP claim needed.
 			var job struct {
 				JobID  uint                   `json:"job_id"`
 				Action string                 `json:"action"`
 				Params map[string]any         `json:"params"`
 			}
 			if err := json.Unmarshal(envelope.Payload, &job); err != nil {
-				log.Printf("ws job_full unmarshal error: %v", err)
+				log.Printf("[ws] [ts=%s] job_full unmarshal error: %v", t, err)
 				continue
 			}
-			log.Printf("ws job_full received: id=%d action=%s", job.JobID, job.Action)
+			log.Printf("[ws] [ts=%s] job_full: id=%d action=%s params=%+v", t, job.JobID, job.Action, job.Params)
 			if c.onJobFull != nil {
 				go c.onJobFull(c.rootCtx, job.JobID, job.Action, job.Params)
 			} else {
@@ -303,29 +328,30 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			}
 
 		case "token_rotated":
-			// Session token rotation from control plane.
 			var payload struct {
 				NewToken string `json:"new_token"`
 			}
 			json.Unmarshal(envelope.Payload, &payload)
 			if payload.NewToken != "" {
 				c.cfg.SessionToken = payload.NewToken
-				log.Println("ws token rotated")
+				log.Printf("[ws] [ts=%s] token rotated: new=%.20s...", t, payload.NewToken)
+			} else {
+				log.Printf("[ws] [ts=%s] token_rotated: empty token ignored", t)
 			}
 
 		case "job_cancelled":
-			log.Println("ws job cancelled (handling pending)")
+			log.Printf("[ws] [ts=%s] job_cancelled (handling pending)", t)
 
 		case "list_containers":
-			// List Docker containers on this server and send back via egress.
+			log.Printf("[ws] [ts=%s] list_containers requested", t)
 			if c.docker == nil {
-				log.Println("docker not available for list_containers")
+				log.Printf("[ws] [ts=%s] docker not available for list_containers", t)
 				c.sendError("docker_not_available", "Docker is not installed on this server")
 				continue
 			}
 			containers, err := c.docker.ListContainers(ctx)
 			if err != nil {
-				log.Printf("list containers error: %v", err)
+				log.Printf("[ws] [ts=%s] list containers error: %v", t, err)
 				c.sendError("docker_error", err.Error())
 				continue
 			}
@@ -333,21 +359,23 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			for _, ct := range containers {
 				infos = append(infos, containerToInfo(ct))
 			}
-			msg, _ := json.Marshal(map[string]any{
+			resp, _ := json.Marshal(map[string]any{
 				"v": 1, "type": "container_list",
 				"payload": map[string]any{
 					"containers": infos,
 				},
 			})
+			log.Printf("[ws] [ts=%s] list_containers: found %d, sending response (%d bytes)", t, len(infos), len(resp))
 			select {
-			case c.egressLow <- msg:
+			case c.egressLow <- resp:
 			default:
+				log.Printf("[ws] [ts=%s] list_containers: egressLow full, dropping response", t)
 			}
 
 		case "log_stream":
-			// Start streaming logs from a Docker container to the control plane.
+			log.Printf("[ws] [ts=%s] log_stream requested", t)
 			if c.docker == nil {
-				log.Println("docker not available for log_stream")
+				log.Printf("[ws] [ts=%s] docker not available for log_stream", t)
 				c.sendError("docker_not_available", "Docker is not installed on this server")
 				continue
 			}
@@ -361,9 +389,10 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 				req.Tail = 100
 			}
 
-			log.Printf("starting log stream: container=%s stream_id=%s", req.Container, req.StreamID)
+			log.Printf("[ws] [ts=%s] starting log stream: container=%s tail=%d stream_id=%s", t, req.Container, req.Tail, req.StreamID)
 
 			logCh := make(chan string, 64)
+			var linesSent atomic.Int64
 
 			streamCtx, streamCancel := context.WithCancel(ctx)
 			go func() {
@@ -380,28 +409,33 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 					})
 					select {
 					case c.egressLow <- msg:
+						linesSent.Add(1)
 					default:
+						log.Printf("[ws] [ts=%s] log_stream: egressLow full, dropping line", ts())
 					}
 				}
 			}()
 
 			err := c.docker.StreamLogs(streamCtx, req.Container, req.Tail, logCh)
 			if err != nil {
-				log.Printf("log stream ended: %v", err)
+				log.Printf("[ws] [ts=%s] log stream ended: %v (sent %d lines)", ts(), err, linesSent.Load())
+			} else {
+				log.Printf("[ws] [ts=%s] log stream completed (sent %d lines)", ts(), linesSent.Load())
 			}
 			close(logCh)
 			streamCancel()
 
 		case "log_stream_stop":
-			log.Println("log stream stop requested")
+			log.Printf("[ws] [ts=%s] log_stream_stop requested", t)
 
 		default:
-			log.Printf("ws unknown message type: %s", envelope.Type)
+			log.Printf("[ws] [ts=%s] unknown message type: %s", t, envelope.Type)
 		}
 	}
 
 	c.connected.Store(false)
 	c.setConn(nil)
+	log.Printf("[ws] [ts=%s] read channel closed — connection ending", ts())
 	return fmt.Errorf("connection closed")
 }
 
@@ -410,6 +444,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 // SendHeartbeat attempts to send metrics over the WebSocket egress channel.
 // If the channel is full, it falls back to an HTTP POST to /agents/heartbeat.
 func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken string, metrics dtos.HeartbeatMetrics) error {
+	t := ts()
 	payload, _ := json.Marshal(dtos.HeartbeatRequest{
 		AgentID:  agentID,
 		ServerID: c.cfg.ServerID,
@@ -423,10 +458,13 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 		})
 		select {
 		case c.egress <- msg:
+			log.Printf("[ws] [ts=%s] heartbeat sent via WS cpu=%.1f%% mem=%.1f%%", t, metrics.CPUPercent, metrics.MemoryPercent)
 			return nil
 		default:
-			log.Println("ws egress full, falling back to http heartbeat")
+			log.Printf("[ws] [ts=%s] WS egress full, falling back to HTTP heartbeat", t)
 		}
+	} else {
+		log.Printf("[ws] [ts=%s] WS not connected, falling back to HTTP heartbeat", t)
 	}
 
 	// HTTP fallback
@@ -436,17 +474,21 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 
 	resp, err := c.client.Do(req)
 	if err != nil {
+		log.Printf("[ws] [ts=%s] HTTP heartbeat error: %v", t, err)
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		log.Printf("[ws] [ts=%s] HTTP heartbeat failed: status=%d", t, resp.StatusCode)
 		return fmt.Errorf("heartbeat HTTP %d", resp.StatusCode)
 	}
 
 	var result dtos.HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.PendingJobsCount > 0 {
-		log.Printf("%d pending job(s)", result.PendingJobsCount)
+		log.Printf("[ws] [ts=%s] HTTP heartbeat ok — %d pending job(s)", t, result.PendingJobsCount)
+	} else {
+		log.Printf("[ws] [ts=%s] HTTP heartbeat ok", t)
 	}
 	return nil
 }
@@ -455,11 +497,14 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 
 // PollJobs fetches all pending jobs from the control plane via GET /agents/jobs.
 func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
+	t := ts()
+	log.Printf("[http] [ts=%s] polling jobs from %s/agents/jobs", t, c.cfg.APIURL)
 	req, _ := http.NewRequestWithContext(ctx, "GET", c.cfg.APIURL+"/agents/jobs", nil)
 	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
+		log.Printf("[http] [ts=%s] poll jobs error: %v", t, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -468,7 +513,14 @@ func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
 		Data []dtos.JobItem `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("[http] [ts=%s] poll jobs decode error: %v", t, err)
 		return nil, err
+	}
+	log.Printf("[http] [ts=%s] poll jobs: found %d pending", t, len(result.Data))
+	if len(result.Data) > 0 {
+		for _, job := range result.Data {
+			log.Printf("[http] [ts=%s]   job id=%d action=%s type=%s", t, job.ID, job.Action, job.Type)
+		}
 	}
 	return result.Data, nil
 }
@@ -476,6 +528,8 @@ func (c *WSClient) PollJobs(ctx context.Context) ([]dtos.JobItem, error) {
 // ClaimJob atomically claims and fetches a job via POST /agents/jobs/:id/claim.
 // The backend marks the job as accepted and returns full details in one round trip.
 func (c *WSClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, error) {
+	t := ts()
+	log.Printf("[http] [ts=%s] claiming job %d", t, jobID)
 	req, err := http.NewRequestWithContext(ctx, "POST",
 		fmt.Sprintf("%s/agents/jobs/%d/claim", c.cfg.APIURL, jobID), nil)
 	if err != nil {
@@ -485,14 +539,17 @@ func (c *WSClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, err
 
 	resp, err := c.client.Do(req)
 	if err != nil {
+		log.Printf("[http] [ts=%s] claim job %d error: %v", t, jobID, err)
 		return nil, fmt.Errorf("claim job %d: %w", jobID, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusConflict {
+		log.Printf("[http] [ts=%s] claim job %d: already claimed (409)", t, jobID)
 		return nil, fmt.Errorf("claim job %d: already claimed", jobID)
 	}
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[http] [ts=%s] claim job %d: HTTP %d", t, jobID, resp.StatusCode)
 		return nil, fmt.Errorf("claim job %d: HTTP %d", jobID, resp.StatusCode)
 	}
 
@@ -501,37 +558,47 @@ func (c *WSClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, err
 		Data    *dtos.JobItem `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		log.Printf("[http] [ts=%s] claim job %d decode error: %v", t, jobID, err)
 		return nil, fmt.Errorf("decode job %d: %w", jobID, err)
 	}
 
 	if !apiResp.Success || apiResp.Data == nil {
+		log.Printf("[http] [ts=%s] claim job %d: no data returned", t, jobID)
 		return nil, fmt.Errorf("claim job %d: no data returned", jobID)
 	}
 
+	log.Printf("[http] [ts=%s] claimed job %d: action=%s", t, jobID, apiResp.Data.Action)
 	return apiResp.Data, nil
 }
 
 // AcceptJob marks a job as accepted via POST /agents/jobs/:id/accept.
 // Deprecated: Use ClaimJob instead, which atomically claims and fetches job details.
 func (c *WSClient) AcceptJob(ctx context.Context, jobID uint) error {
+	t := ts()
+	log.Printf("[http] [ts=%s] accepting job %d", t, jobID)
 	req, _ := http.NewRequestWithContext(ctx, "POST",
 		fmt.Sprintf("%s/agents/jobs/%d/accept", c.cfg.APIURL, jobID), nil)
 	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
+		log.Printf("[http] [ts=%s] accept job %d error: %v", t, jobID, err)
 		return err
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		log.Printf("[http] [ts=%s] accept job %d: HTTP %d", t, jobID, resp.StatusCode)
 		return fmt.Errorf("accept HTTP %d", resp.StatusCode)
 	}
+	log.Printf("[http] [ts=%s] accepted job %d", t, jobID)
 	return nil
 }
 
 // StreamLogs sends a batch of log lines for a job via POST /agents/jobs/:id/logs.
 func (c *WSClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogLine) error {
+	t := ts()
+	log.Printf("[http] [ts=%s] streaming %d log lines for job %d", t, len(lines), jobID)
 	body, _ := json.Marshal(dtos.StreamLogsRequest{Lines: lines})
 
 	req, _ := http.NewRequestWithContext(ctx, "POST",
@@ -542,18 +609,32 @@ func (c *WSClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogL
 
 	resp, err := c.client.Do(req)
 	if err != nil {
+		log.Printf("[http] [ts=%s] stream logs for job %d error: %v", t, jobID, err)
 		return err
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		log.Printf("[http] [ts=%s] stream logs for job %d: HTTP %d", t, jobID, resp.StatusCode)
 		return fmt.Errorf("logs HTTP %d", resp.StatusCode)
 	}
+	log.Printf("[http] [ts=%s] streamed %d logs for job %d", t, len(lines), jobID)
 	return nil
 }
 
 // CompleteJob marks a job as completed (success or failed) via POST /agents/jobs/:id/complete.
 func (c *WSClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg, step string, result any) error {
+	t := ts()
+	var resultPreview string
+	if result != nil {
+		b, _ := json.Marshal(result)
+		if len(b) > 200 {
+			resultPreview = string(b[:200]) + "..."
+		} else {
+			resultPreview = string(b)
+		}
+	}
+	log.Printf("[http] [ts=%s] completing job %d: status=%s step=%s result=%s", t, jobID, status, step, resultPreview)
 	body, _ := json.Marshal(dtos.CompleteJobRequest{
 		Status: status, Error: errorMsg, Step: step, Result: result,
 	})
@@ -566,12 +647,15 @@ func (c *WSClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg
 
 	resp, err := c.client.Do(req)
 	if err != nil {
+		log.Printf("[http] [ts=%s] complete job %d error: %v", t, jobID, err)
 		return err
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		log.Printf("[http] [ts=%s] complete job %d: HTTP %d", t, jobID, resp.StatusCode)
 		return fmt.Errorf("complete HTTP %d", resp.StatusCode)
 	}
+	log.Printf("[http] [ts=%s] completed job %d", t, jobID)
 	return nil
 }
