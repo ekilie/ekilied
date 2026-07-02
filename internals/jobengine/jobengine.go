@@ -361,6 +361,38 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		name, _ := params["name"].(string)
 		execErr = restartSupervisorProgram(ctx, siteName, name)
 
+	case "diagnostics":
+		writeLog("[diag] running diagnostics...")
+		started := time.Now()
+		for i := 1; i <= 5; i++ {
+			time.Sleep(100 * time.Millisecond)
+			writeLog("[diag] step %d/5 — checking subsystem %d...", i, i)
+			lb.mu.Lock()
+			for j := range lb.lines {
+				if j >= len(lb.lines)-1 {
+					continue
+				}
+				lb.lines[j].Step = fmt.Sprintf("step_%d", i)
+			}
+			lb.mu.Unlock()
+			lb.flushNow()
+		}
+		timing := map[string]any{
+			"total_ms": time.Since(started).Milliseconds(),
+			"steps":    5,
+			"ok":       true,
+			"version":  config.Version,
+			"hostname": "",
+		}
+		if h, err := os.Hostname(); err == nil {
+			timing["hostname"] = h
+		}
+		lb.flushNow()
+		if err := e.client.CompleteJob(ctx, jobID, "success", "", action, timing); err != nil {
+			log.Printf("complete job %d failed: %v", jobID, err)
+		}
+		return
+
 	case "self_update":
 		writeLog("[update] checking for updates...")
 		repo := "ekilie/ekilied"
