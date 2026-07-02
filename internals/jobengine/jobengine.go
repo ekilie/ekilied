@@ -289,6 +289,20 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		rawCfg, _ := params["raw_config"].(string)
 		execErr = writeNginxConfig(ctx, siteName, rawCfg)
 
+	case "read_nginx_config":
+		writeLog("[nginx] reading config for %s...", siteName)
+		config, readErr := readNginxConfig(siteName)
+		if readErr != nil {
+			execErr = readErr
+		} else {
+			writeLog("[nginx] config read successfully")
+			lb.flushNow()
+			if err := e.client.CompleteJob(ctx, jobID, "success", "", action, map[string]string{"config": config}); err != nil {
+				log.Printf("complete job %d failed: %v", jobID, err)
+			}
+			return
+		}
+
 	case "ssl_issue":
 		domain, _ := params["domain"].(string)
 		email, _ := params["email"].(string)

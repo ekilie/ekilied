@@ -85,7 +85,7 @@ func cloneRepo(ctx context.Context, repoDir, repoURL, branch, gitToken, commitSH
 		checkoutRef = commitSHA
 	}
 
-	cmd = exec.CommandContext(ctx, "git", "checkout", "-f", checkoutRef)
+	cmd = exec.CommandContext(ctx, "git", "checkout", "-f", "-q", checkoutRef)
 	cmd.Dir = repoDir
 	cmd.Stdout = lb
 	cmd.Stderr = lb

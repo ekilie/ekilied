@@ -3,6 +3,7 @@ package jobengine
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -11,17 +12,34 @@ func installNginx(ctx context.Context) error {
 	return run(ctx, "apt-get", "install", "-y", "nginx")
 }
 
-// writeNginxConfig writes an nginx site config, validates it, enables nginx, and reloads.
+// writeNginxConfig writes an nginx site config, validates it, creates a symlink
+// in sites-enabled, enables nginx, and reloads.
 func writeNginxConfig(ctx context.Context, siteName, nginxConfig string) error {
 	path := fmt.Sprintf("/etc/nginx/sites-available/%s", siteName)
 	if err := writeFile(path, nginxConfig); err != nil {
 		return err
+	}
+	// Create symlink in sites-enabled (removes first to handle re-creates)
+	symlink := fmt.Sprintf("/etc/nginx/sites-enabled/%s", siteName)
+	os.Remove(symlink)
+	if err := os.Symlink(path, symlink); err != nil {
+		return fmt.Errorf("create symlink: %w", err)
 	}
 	if out, err := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); err != nil {
 		return fmt.Errorf("nginx validation failed: %s", string(out))
 	}
 	exec.CommandContext(ctx, "systemctl", "enable", "nginx").Run()
 	return run(ctx, "systemctl", "reload-or-restart", "nginx")
+}
+
+// readNginxConfig reads the nginx site config from disk and returns its content.
+func readNginxConfig(siteName string) (string, error) {
+	path := fmt.Sprintf("/etc/nginx/sites-available/%s", siteName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read nginx config: %w", err)
+	}
+	return string(data), nil
 }
 
 // issueSSL issues an SSL certificate via certbot (nginx mode).
