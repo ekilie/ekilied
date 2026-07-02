@@ -1,6 +1,10 @@
 # Binaries
-ekilied
-ekilied-*
+/ekilied
+/ekilied-*
+/out/ekilied
+
+# Source files in cmd/ekilied/ are NOT binaries (despite the dir name)
+!/cmd/ekilied/*.go
 
 # Build
 /build
