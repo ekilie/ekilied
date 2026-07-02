@@ -149,7 +149,6 @@ func (lb *LogBatcher) Close() {
 	lb.cancel()
 }
 
-
 // ── Job engine ──────────────────────────────────────────────────────
 
 // JobEngine receives job triggers, claims them from the control plane,
@@ -257,12 +256,20 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	switch action {
 	case "site_create":
 		writeLog("[site] creating site %s...", siteName)
-		execErr = createSiteDir(ctx, siteName)
+		execErr = createSite(ctx, siteName, params, writeLog)
 
 	case "site_delete":
 		writeLog("[site] deleting site %s...", siteName)
 		cleanupSupervisorForSite(siteName)
 		execErr = removeSiteDir(ctx, siteName)
+
+	case "site_sync":
+		writeLog("[sync] syncing site %s...", siteName)
+		execErr = e.syncSite(ctx, siteName, params, lb, writeLog)
+
+	case "command":
+		writeLog("[command] running on %s...", siteName)
+		execErr = runSiteCommand(ctx, siteName, params, lb)
 
 	case "install_nginx":
 		writeLog("[system] installing nginx...")
