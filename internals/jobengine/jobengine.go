@@ -207,6 +207,28 @@ func (e *JobEngine) HandleJobTrigger(ctx context.Context, jobID uint) {
 	e.Execute(ctx, job.ID, job.Action, raw)
 }
 
+// HandleJobTriggerFull is the entry point when a full job payload arrives via WS.
+// It starts executing immediately with the provided params — no HTTP claim round-trip.
+// The claim is sent in the background for DB consistency.
+func (e *JobEngine) HandleJobTriggerFull(ctx context.Context, jobID uint, action string, params map[string]any) {
+	if !e.markDispatched(jobID) {
+		log.Printf("job %d already dispatched, skipping duplicate trigger", jobID)
+		return
+	}
+
+	raw, _ := json.Marshal(params)
+
+	// Execute immediately with the params we already have
+	go e.Execute(ctx, jobID, action, raw)
+
+	// Claim in background for DB consistency (best-effort)
+	go func() {
+		if _, err := e.client.ClaimJob(ctx, jobID); err != nil {
+			log.Printf("background claim failed for job %d: %v (execution proceeding)", jobID, err)
+		}
+	}()
+}
+
 // Execute runs a job action with the given parameters.
 func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawParams json.RawMessage) {
 	log.Printf("executing job %d: action=%s", jobID, action)

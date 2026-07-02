@@ -38,6 +38,8 @@ func New(cfg *config.Config, db *gorm.DB) (*Ekilied, error) {
 
 	e.ws = NewWSClient(cfg, ctx, func(jobCtx context.Context, jobID uint) {
 		e.engine.HandleJobTrigger(jobCtx, jobID)
+	}, func(jobCtx context.Context, jobID uint, action string, params map[string]any) {
+		e.engine.HandleJobTriggerFull(jobCtx, jobID, action, params)
 	})
 	e.engine = jobengine.NewJobEngine(e.ws)
 

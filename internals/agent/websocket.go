@@ -21,6 +21,10 @@ import (
 // job via the HTTP claim endpoint.
 type JobHandler func(ctx context.Context, jobID uint)
 
+// JobFullHandler is the callback for when a full job payload arrives via WebSocket.
+// The agent can start executing immediately without an HTTP claim round-trip.
+type JobFullHandler func(ctx context.Context, jobID uint, action string, params map[string]any)
+
 // WSClient manages the WebSocket connection to the control plane.
 // It handles connection lifecycle (connect, reconnect, disconnect),
 // message dispatch, heartbeats, and provides HTTP helper methods
@@ -35,6 +39,7 @@ type WSClient struct {
 	egress    chan []byte
 	egressLow chan []byte
 	onJob     JobHandler
+	onJobFull JobFullHandler
 	docker    *DockerService
 }
 
@@ -57,11 +62,11 @@ func (c *WSClient) Connected() bool {
 
 // NewWSClient creates a new WSClient. The onJob callback is invoked when
 // a job trigger message is received. If nil, a no-op is used.
-func NewWSClient(cfg *config.Config, rootCtx context.Context, onJob JobHandler) *WSClient {
+func NewWSClient(cfg *config.Config, rootCtx context.Context, onJob JobHandler, onJobFull ...JobFullHandler) *WSClient {
 	if onJob == nil {
 		onJob = func(ctx context.Context, jobID uint) {}
 	}
-	return &WSClient{
+	c := &WSClient{
 		cfg:       cfg,
 		rootCtx:   rootCtx,
 		client:    &http.Client{Timeout: 30 * time.Second},
@@ -69,6 +74,10 @@ func NewWSClient(cfg *config.Config, rootCtx context.Context, onJob JobHandler) 
 		egressLow: make(chan []byte, 128),
 		onJob:     onJob,
 	}
+	if len(onJobFull) > 0 {
+		c.onJobFull = onJobFull[0]
+	}
+	return c
 }
 
 // sendError queues an error message to be sent over the WebSocket egress channel.
@@ -264,7 +273,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 		switch envelope.Type {
 		case "job":
-			// Lightweight job trigger — agent fetches full details via HTTP.
+			// Legacy lightweight job trigger — agent fetches full details via HTTP.
 			var job struct {
 				JobID uint `json:"job_id"`
 			}
@@ -274,6 +283,24 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			}
 			log.Printf("ws job trigger received: id=%d", job.JobID)
 			go c.onJob(c.rootCtx, job.JobID)
+
+		case "job_full":
+			// Full job payload — agent executes immediately, no HTTP claim needed.
+			var job struct {
+				JobID  uint                   `json:"job_id"`
+				Action string                 `json:"action"`
+				Params map[string]any         `json:"params"`
+			}
+			if err := json.Unmarshal(envelope.Payload, &job); err != nil {
+				log.Printf("ws job_full unmarshal error: %v", err)
+				continue
+			}
+			log.Printf("ws job_full received: id=%d action=%s", job.JobID, job.Action)
+			if c.onJobFull != nil {
+				go c.onJobFull(c.rootCtx, job.JobID, job.Action, job.Params)
+			} else {
+				go c.onJob(c.rootCtx, job.JobID)
+			}
 
 		case "token_rotated":
 			// Session token rotation from control plane.
