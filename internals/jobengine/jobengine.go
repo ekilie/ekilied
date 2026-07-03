@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -409,7 +410,11 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 			writeLog("[diag] phase: %s", phase.name)
 			for _, line := range phase.logs {
 				time.Sleep(phase.sleep / time.Duration(len(phase.logs)+1))
-				writeLog(line, os.Getpid())
+				if strings.Contains(line, "%d") {
+					writeLog(line, os.Getpid())
+				} else {
+					writeLog(line)
+				}
 			}
 			lb.flushNow()
 		}
