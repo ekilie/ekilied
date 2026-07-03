@@ -75,11 +75,13 @@ type StreamLogsRequest struct {
 }
 
 type LogLine struct {
-	Stream   string `json:"stream"`
-	Line     string `json:"line"`
-	Step     string `json:"step,omitempty"`
-	TS       string `json:"ts"`
-	Sequence int    `json:"sequence"`
+	Stream    string `json:"stream"`
+	Line      string `json:"line"`
+	Step      string `json:"step,omitempty"`
+	Timestamp string `json:"timestamp"`
+	Sequence  uint64 `json:"sequence"`
+	Level     string `json:"level,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 type CompleteJobRequest struct {

@@ -25,7 +25,7 @@ import (
 )
 
 // DefaultMaxConcurrentJobs limits how many jobs can run simultaneously.
-const DefaultMaxConcurrentJobs = 5
+const DefaultMaxConcurrentJobs = 10
 
 // JobClient is the interface the job engine needs to communicate
 // with the control plane. Implemented by agent.WSClient.
@@ -106,15 +106,21 @@ func (lb *LogBatcher) WriteErr(p []byte) (int, error) {
 func (lb *LogBatcher) append(stream string, p []byte) (int, error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
+	level := "info"
+	if stream == "stderr" {
+		level = "error"
+	}
 	for _, line := range splitLines(string(p)) {
 		if line == "" {
 			continue
 		}
 		lb.lines = append(lb.lines, dtos.LogLine{
-			Stream:   stream,
-			Line:     line,
-			TS:       time.Now().UTC().Format(time.RFC3339),
-			Sequence: len(lb.lines) + 1,
+			Stream:    stream,
+			Line:      line,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Sequence:  uint64(len(lb.lines) + 1),
+			Level:     level,
+			Source:    "job",
 		})
 	}
 	return len(p), nil
@@ -271,10 +277,12 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	writeLog := func(format string, args ...any) {
 		lb.mu.Lock()
 		lb.lines = append(lb.lines, dtos.LogLine{
-			Stream:   "stdout",
-			Line:     fmt.Sprintf(format, args...),
-			TS:       time.Now().UTC().Format(time.RFC3339),
-			Sequence: len(lb.lines) + 1,
+			Stream:    "stdout",
+			Line:      fmt.Sprintf(format, args...),
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Sequence:  uint64(len(lb.lines) + 1),
+			Level:     "info",
+			Source:    "system",
 		})
 		lb.mu.Unlock()
 	}
