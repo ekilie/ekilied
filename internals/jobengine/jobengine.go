@@ -11,12 +11,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/ekilie/ekilied/internals/config"
 	"github.com/ekilie/ekilied/internals/dtos"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v3/load"
+	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/net"
 )
 
 // DefaultMaxConcurrentJobs limits how many jobs can run simultaneously.
@@ -363,74 +368,108 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		execErr = restartSupervisorProgram(ctx, siteName, name)
 
 	case "diagnostics":
-		writeLog("[diag] starting communication test...")
+		writeLog("[diag] gathering server metrics...")
 		diagStarted := time.Now()
 
-		phases := []struct {
-			name   string
-			logs   []string
-			sleep  time.Duration
-		}{
-			{"Acquiring deployment lock", []string{
-				"[deploy] attempting lock for site 'diagnostics'...",
-				"[deploy] lock acquired (deploy-token: diag_%d)",
-			}, 150 * time.Millisecond},
-			{"Preparing workspace", []string{
-				"[deploy] site dir: /opt/ekilie/sites/diagnostics",
-				"[deploy] creating workspace structure...",
-				"[deploy] workspace ready",
-			}, 100 * time.Millisecond},
-			{"Cloning repository", []string{
-				"[git] cloning https://github.com/ekilie/diagnostics.git [main]...",
-				"[git] remote: Enumerating objects: 42, done.",
-				"[git] resolving deltas: 100%% (21/21), done.",
-			}, 200 * time.Millisecond},
-			{"Installing dependencies", []string{
-				"[build] npm ci --production",
-				"[build] added 1,234 packages in 3.2s",
-			}, 150 * time.Millisecond},
-			{"Running build", []string{
-				"[build] npm run build",
-				"[build] ✓ 42 modules transformed",
-				"[build] dist/index.html      2.1 kB",
-			}, 200 * time.Millisecond},
-			{"Restarting service", []string{
-				"[service] stopping diagnostics...",
-				"[service] starting diagnostics...",
-				"[service] service diagnostics started (pid: %d)",
-			}, 150 * time.Millisecond},
-			{"Running health check", []string{
-				"[health] probing http://localhost:3000/health...",
-				"[health] HTTP 200 — 4ms",
-				"[health] status: healthy",
-			}, 100 * time.Millisecond},
-		}
+		hostname, _ := os.Hostname()
+		writeLog("[diag] hostname: %s", hostname)
+		writeLog("[diag] agent version: %s (commit: %s)", config.Version, config.Commit)
+		lb.flushNow()
 
-		for _, phase := range phases {
-			writeLog("[diag] phase: %s", phase.name)
-			for _, line := range phase.logs {
-				time.Sleep(phase.sleep / time.Duration(len(phase.logs)+1))
-				if strings.Contains(line, "%d") {
-					writeLog(line, os.Getpid())
-				} else {
-					writeLog(line)
-				}
-			}
-			lb.flushNow()
+		// ── CPU ──
+		writeLog("[diag] collecting CPU info...")
+		cpuInfo, _ := cpu.Info()
+		if len(cpuInfo) > 0 {
+			writeLog("[diag]   model: %s", cpuInfo[0].ModelName)
 		}
+		cores, _ := cpu.Counts(true)
+		logical, _ := cpu.Counts(false)
+		writeLog("[diag]   cores: %d physical / %d logical", cores, logical)
+		cpuPct, _ := cpu.Percent(200*time.Millisecond, false)
+		if len(cpuPct) > 0 {
+			writeLog("[diag]   usage: %.1f%%", cpuPct[0])
+		}
+		lb.flushNow()
+
+		// ── Memory ──
+		writeLog("[diag] collecting memory info...")
+		memInfo, _ := mem.VirtualMemory()
+		if memInfo != nil {
+			writeLog("[diag]   total: %s", fmtBytes(memInfo.Total))
+			writeLog("[diag]   used:  %s (%.1f%%)", fmtBytes(memInfo.Used), memInfo.UsedPercent)
+			writeLog("[diag]   free:  %s", fmtBytes(memInfo.Free))
+		}
+		lb.flushNow()
+
+		// ── Disk ──
+		writeLog("[diag] collecting disk info...")
+		diskInfo, _ := disk.Usage("/")
+		if diskInfo != nil {
+			writeLog("[diag]   total: %s", fmtBytes(diskInfo.Total))
+			writeLog("[diag]   used:  %s (%.1f%%)", fmtBytes(diskInfo.Used), diskInfo.UsedPercent)
+			writeLog("[diag]   free:  %s", fmtBytes(diskInfo.Free))
+		}
+		lb.flushNow()
+
+		// ── Load ──
+		writeLog("[diag] collecting load averages...")
+		loadAvg, _ := load.Avg()
+		if loadAvg != nil {
+			writeLog("[diag]   1 min:  %.2f", loadAvg.Load1)
+			writeLog("[diag]   5 min:  %.2f", loadAvg.Load5)
+			writeLog("[diag]   15 min: %.2f", loadAvg.Load15)
+		}
+		lb.flushNow()
+
+		// ── Uptime ──
+		writeLog("[diag] collecting uptime...")
+		upSeconds, _ := host.Uptime()
+		days := upSeconds / 86400
+		hours := (upSeconds % 86400) / 3600
+		mins := (upSeconds % 3600) / 60
+		writeLog("[diag]   uptime: %dd %dh %dm (%d seconds)", days, hours, mins, upSeconds)
+		lb.flushNow()
+
+		// ── OS ──
+		writeLog("[diag] collecting OS info...")
+		hostInfo, _ := host.Info()
+		if hostInfo != nil {
+			writeLog("[diag]   os:       %s", hostInfo.OS)
+			writeLog("[diag]   platform: %s %s", hostInfo.Platform, hostInfo.PlatformVersion)
+			writeLog("[diag]   kernel:   %s", hostInfo.KernelVersion)
+		}
+		lb.flushNow()
+
+		// ── Network ──
+		writeLog("[diag] collecting network I/O...")
+		netIO, _ := net.IOCounters(false)
+		if len(netIO) > 0 {
+			writeLog("[diag]   bytes sent:    %s", fmtBytes(netIO[0].BytesSent))
+			writeLog("[diag]   bytes received: %s", fmtBytes(netIO[0].BytesRecv))
+			writeLog("[diag]   packets sent:  %d", netIO[0].PacketsSent)
+			writeLog("[diag]   packets recv:  %d", netIO[0].PacketsRecv)
+		}
+		lb.flushNow()
 
 		duration := time.Since(diagStarted)
-		writeLog("[diag] communication test complete in %v", duration)
+		writeLog("[diag] diagnostics complete in %v", duration)
 		lb.flushNow()
 
 		result := map[string]interface{}{
-			"total_ms": duration.Milliseconds(),
-			"ok":       true,
-			"version":  config.Version,
-			"hostname": "",
-		}
-		if h, err := os.Hostname(); err == nil {
-			result["hostname"] = h
+			"total_ms":  duration.Milliseconds(),
+			"ok":        true,
+			"version":   config.Version,
+			"hostname":  hostname,
+			"cpu_usage": fmt.Sprintf("%.1f%%", cpuPct[0]),
+			"memory":    fmt.Sprintf("%.1f%%", memInfo.UsedPercent),
+			"disk":      fmt.Sprintf("%.1f%%", diskInfo.UsedPercent),
+			"load_1":    loadAvg.Load1,
+			"load_5":    loadAvg.Load5,
+			"load_15":   loadAvg.Load15,
+			"uptime_s":  upSeconds,
+			"os":        hostInfo.OS,
+			"platform":  hostInfo.Platform + " " + hostInfo.PlatformVersion,
+			"kernel":    hostInfo.KernelVersion,
 		}
 		if err := e.client.CompleteJob(ctx, jobID, "success", "", action, result); err != nil {
 			log.Printf("complete job %d failed: %v", jobID, err)

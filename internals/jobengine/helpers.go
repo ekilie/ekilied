@@ -32,6 +32,20 @@ func orDefaultStr(s, def string) string {
 	return s
 }
 
+// fmtBytes converts a byte count to a human-readable string.
+func fmtBytes(b uint64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
 // splitLines splits a string into lines, preserving empty trailing content.
 func splitLines(s string) []string {
 	var lines []string
