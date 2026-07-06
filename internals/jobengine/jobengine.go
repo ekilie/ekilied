@@ -318,6 +318,24 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		writeLog("[deploy] deploying %s...", siteName)
 		execErr = e.runDeployScript(ctx, siteName, params, lb, writeLog)
 
+	case "read_env":
+		writeLog("[env] reading .env for %s...", siteName)
+		content, readErr := readEnvFile(siteName, params)
+		if readErr != nil {
+			execErr = readErr
+		} else {
+			writeLog("[env] .env read successfully (%d bytes)", len(content))
+			lb.flushNow()
+			if err := e.client.CompleteJob(ctx, jobID, "success", "", action, map[string]string{"content": content}); err != nil {
+				log.Printf("complete job %d failed: %v", jobID, err)
+			}
+			return
+		}
+
+	case "write_env":
+		writeLog("[env] writing .env for %s...", siteName)
+		execErr = writeEnvContent(siteName, params)
+
 	case "update_env":
 		execErr = writeEnvFile(siteName, params)
 

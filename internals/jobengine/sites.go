@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 // createSiteDir creates the site directory.
@@ -92,16 +93,20 @@ func (e *JobEngine) syncSite(ctx context.Context, siteName string, params map[st
 }
 
 // runSiteCommand runs an arbitrary shell command inside the site directory.
-// The env param is written to .env and also injected into the command's real
-// environment, so the command sees the variables whether or not it loads .env.
+// Env is loaded from the .env file on disk (if it exists).
 func runSiteCommand(ctx context.Context, siteName string, params map[string]any, lb *LogBatcher) error {
 	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	if err := os.MkdirAll(siteDir, 0755); err != nil {
+	repoDir := siteDir + "/current"
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
 		return fmt.Errorf("mkdir site: %w", err)
 	}
 
-	if err := writeEnvFile(siteName, params); err != nil {
-		return fmt.Errorf("write env: %w", err)
+	// Ensure .env exists
+	envPath := resolveEnvPath(siteName, params)
+	parentDir := filepath.Dir(envPath)
+	os.MkdirAll(parentDir, 0755)
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		os.WriteFile(envPath, []byte{}, 0644)
 	}
 
 	command, _ := params["command"].(string)
@@ -109,17 +114,9 @@ func runSiteCommand(ctx context.Context, siteName string, params map[string]any,
 		return fmt.Errorf("command is required")
 	}
 
-	cmdEnv := os.Environ()
-	if envRaw, ok := params["env"].(map[string]any); ok {
-		for k, v := range envRaw {
-			cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%v", k, v))
-		}
-	}
-
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", command)
-	cmd.Dir = siteDir
+	cmd.Dir = repoDir
 	cmd.Stdout = lb
 	cmd.Stderr = lb
-	cmd.Env = cmdEnv
 	return cmd.Run()
 }
