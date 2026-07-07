@@ -71,7 +71,7 @@ func cloneRepo(ctx context.Context, repoDir, repoURL, branch, gitToken, commitSH
 		return cmd.Run()
 	}
 
-	// Already cloned — fetch and checkout
+	// Already cloned fetch and checkout
 	cmd := exec.CommandContext(ctx, "git", "fetch", "--depth=1", "origin", ref)
 	cmd.Dir = repoDir
 	cmd.Stdout = lb
