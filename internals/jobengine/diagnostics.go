@@ -16,7 +16,7 @@ import (
 	"github.com/shirou/gopsutil/v3/net"
 )
 
-func runDiagnostics(ctx context.Context, lb *LogBatcher, logf func(string, ...any)) {
+func (e *JobEngine) runDiagnostics(ctx context.Context, jobID uint, action string, lb *LogBatcher, logf func(string, ...any)) {
 	logf("[diag] gathering server metrics...")
 	diagStarted := time.Now()
 
@@ -123,5 +123,4 @@ func runDiagnostics(ctx context.Context, lb *LogBatcher, logf func(string, ...an
 	if err := e.client.CompleteJob(ctx, jobID, "success", "", action, result); err != nil {
 		log.Printf("complete job %d failed: %v", jobID, err)
 	}
-	return
 }

@@ -391,7 +391,8 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		execErr = restartSupervisorProgram(ctx, siteName, name)
 
 	case "diagnostics":
-		execErr = runDiagnostics(ctx,lb,writeLog)
+		e.runDiagnostics(ctx, jobID, action, lb, writeLog)
+		return
 
 	case "self_update":
 		writeLog("[update] checking for updates...")
