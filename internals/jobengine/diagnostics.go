@@ -104,21 +104,46 @@ func (e *JobEngine) runDiagnostics(ctx context.Context, jobID uint, action strin
 	logf("[diag] diagnostics complete in %v", duration)
 	lb.flushNow()
 
-	result := map[string]interface{}{
+	// Guarded values: gopsutil calls can return nil/empty on some hosts,
+	// so build the result payload from safe fallbacks to avoid panics.
+	cpuUsage := "unknown"
+	if len(cpuPct) > 0 {
+		cpuUsage = fmt.Sprintf("%.1f%%", cpuPct[0])
+	}
+	memUsage := "unknown"
+	if memInfo != nil {
+		memUsage = fmt.Sprintf("%.1f%%", memInfo.UsedPercent)
+	}
+	diskUsage := "unknown"
+	if diskInfo != nil {
+		diskUsage = fmt.Sprintf("%.1f%%", diskInfo.UsedPercent)
+	}
+	var load1, load5, load15 float64
+	if loadAvg != nil {
+		load1, load5, load15 = loadAvg.Load1, loadAvg.Load5, loadAvg.Load15
+	}
+	osName, platform, kernel := "unknown", "unknown", "unknown"
+	if hostInfo != nil {
+		osName = hostInfo.OS
+		platform = hostInfo.Platform + " " + hostInfo.PlatformVersion
+		kernel = hostInfo.KernelVersion
+	}
+
+	result := map[string]any{
 		"total_ms":  duration.Milliseconds(),
 		"ok":        true,
 		"version":   config.Version,
 		"hostname":  hostname,
-		"cpu_usage": fmt.Sprintf("%.1f%%", cpuPct[0]),
-		"memory":    fmt.Sprintf("%.1f%%", memInfo.UsedPercent),
-		"disk":      fmt.Sprintf("%.1f%%", diskInfo.UsedPercent),
-		"load_1":    loadAvg.Load1,
-		"load_5":    loadAvg.Load5,
-		"load_15":   loadAvg.Load15,
+		"cpu_usage": cpuUsage,
+		"memory":    memUsage,
+		"disk":      diskUsage,
+		"load_1":    load1,
+		"load_5":    load5,
+		"load_15":   load15,
 		"uptime_s":  upSeconds,
-		"os":        hostInfo.OS,
-		"platform":  hostInfo.Platform + " " + hostInfo.PlatformVersion,
-		"kernel":    hostInfo.KernelVersion,
+		"os":        osName,
+		"platform":  platform,
+		"kernel":    kernel,
 	}
 	if err := e.client.CompleteJob(ctx, jobID, "success", "", action, result); err != nil {
 		log.Printf("complete job %d failed: %v", jobID, err)
