@@ -16,12 +16,6 @@ import (
 
 	"github.com/ekilie/ekilied/internals/config"
 	"github.com/ekilie/ekilied/internals/dtos"
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/host"
-	"github.com/shirou/gopsutil/v3/load"
-	"github.com/shirou/gopsutil/v3/mem"
-	"github.com/shirou/gopsutil/v3/net"
 )
 
 // DefaultMaxConcurrentJobs limits how many jobs can run simultaneously.
@@ -313,7 +307,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 
 	case "install_node":
 		execErr = installNode(ctx, writeLog)
-		
+
 	case "install_bun":
 		execErr = installBun(ctx, writeLog)
 
@@ -397,113 +391,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		execErr = restartSupervisorProgram(ctx, siteName, name)
 
 	case "diagnostics":
-		writeLog("[diag] gathering server metrics...")
-		diagStarted := time.Now()
-
-		hostname, _ := os.Hostname()
-		writeLog("[diag] hostname: %s", hostname)
-		writeLog("[diag] agent version: %s (commit: %s)", config.Version, config.Commit)
-		lb.flushNow()
-
-		// ── CPU ──
-		writeLog("[diag] collecting CPU info...")
-		cpuInfo, _ := cpu.Info()
-		if len(cpuInfo) > 0 {
-			writeLog("[diag]   model: %s", cpuInfo[0].ModelName)
-		}
-		cores, _ := cpu.Counts(true)
-		logical, _ := cpu.Counts(false)
-		writeLog("[diag]   cores: %d physical / %d logical", cores, logical)
-		cpuPct, _ := cpu.Percent(200*time.Millisecond, false)
-		if len(cpuPct) > 0 {
-			writeLog("[diag]   usage: %.1f%%", cpuPct[0])
-		}
-		lb.flushNow()
-
-		// ── Memory ──
-		writeLog("[diag] collecting memory info...")
-		memInfo, _ := mem.VirtualMemory()
-		if memInfo != nil {
-			writeLog("[diag]   total: %s", fmtBytes(memInfo.Total))
-			writeLog("[diag]   used:  %s (%.1f%%)", fmtBytes(memInfo.Used), memInfo.UsedPercent)
-			writeLog("[diag]   free:  %s", fmtBytes(memInfo.Free))
-		}
-		lb.flushNow()
-
-		// ── Disk ──
-		writeLog("[diag] collecting disk info...")
-		diskInfo, _ := disk.Usage("/")
-		if diskInfo != nil {
-			writeLog("[diag]   total: %s", fmtBytes(diskInfo.Total))
-			writeLog("[diag]   used:  %s (%.1f%%)", fmtBytes(diskInfo.Used), diskInfo.UsedPercent)
-			writeLog("[diag]   free:  %s", fmtBytes(diskInfo.Free))
-		}
-		lb.flushNow()
-
-		// ── Load ──
-		writeLog("[diag] collecting load averages...")
-		loadAvg, _ := load.Avg()
-		if loadAvg != nil {
-			writeLog("[diag]   1 min:  %.2f", loadAvg.Load1)
-			writeLog("[diag]   5 min:  %.2f", loadAvg.Load5)
-			writeLog("[diag]   15 min: %.2f", loadAvg.Load15)
-		}
-		lb.flushNow()
-
-		// ── Uptime ──
-		writeLog("[diag] collecting uptime...")
-		upSeconds, _ := host.Uptime()
-		days := upSeconds / 86400
-		hours := (upSeconds % 86400) / 3600
-		mins := (upSeconds % 3600) / 60
-		writeLog("[diag]   uptime: %dd %dh %dm (%d seconds)", days, hours, mins, upSeconds)
-		lb.flushNow()
-
-		// ── OS ──
-		writeLog("[diag] collecting OS info...")
-		hostInfo, _ := host.Info()
-		if hostInfo != nil {
-			writeLog("[diag]   os:       %s", hostInfo.OS)
-			writeLog("[diag]   platform: %s %s", hostInfo.Platform, hostInfo.PlatformVersion)
-			writeLog("[diag]   kernel:   %s", hostInfo.KernelVersion)
-		}
-		lb.flushNow()
-
-		// ── Network ──
-		writeLog("[diag] collecting network I/O...")
-		netIO, _ := net.IOCounters(false)
-		if len(netIO) > 0 {
-			writeLog("[diag]   bytes sent:    %s", fmtBytes(netIO[0].BytesSent))
-			writeLog("[diag]   bytes received: %s", fmtBytes(netIO[0].BytesRecv))
-			writeLog("[diag]   packets sent:  %d", netIO[0].PacketsSent)
-			writeLog("[diag]   packets recv:  %d", netIO[0].PacketsRecv)
-		}
-		lb.flushNow()
-
-		duration := time.Since(diagStarted)
-		writeLog("[diag] diagnostics complete in %v", duration)
-		lb.flushNow()
-
-		result := map[string]interface{}{
-			"total_ms":  duration.Milliseconds(),
-			"ok":        true,
-			"version":   config.Version,
-			"hostname":  hostname,
-			"cpu_usage": fmt.Sprintf("%.1f%%", cpuPct[0]),
-			"memory":    fmt.Sprintf("%.1f%%", memInfo.UsedPercent),
-			"disk":      fmt.Sprintf("%.1f%%", diskInfo.UsedPercent),
-			"load_1":    loadAvg.Load1,
-			"load_5":    loadAvg.Load5,
-			"load_15":   loadAvg.Load15,
-			"uptime_s":  upSeconds,
-			"os":        hostInfo.OS,
-			"platform":  hostInfo.Platform + " " + hostInfo.PlatformVersion,
-			"kernel":    hostInfo.KernelVersion,
-		}
-		if err := e.client.CompleteJob(ctx, jobID, "success", "", action, result); err != nil {
-			log.Printf("complete job %d failed: %v", jobID, err)
-		}
-		return
+		execErr = runDiagnostics(ctx,lb,writeLog)
 
 	case "self_update":
 		writeLog("[update] checking for updates...")
