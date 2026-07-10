@@ -313,6 +313,9 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 
 	case "install_node":
 		execErr = installNode(ctx, writeLog)
+		
+	case "install_bun":
+		execErr = installBun(ctx, writeLog)
 
 	case "deploy":
 		writeLog("[deploy] deploying %s...", siteName)
