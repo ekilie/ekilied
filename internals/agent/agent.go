@@ -187,26 +187,31 @@ func (e *Ekilied) heartbeatLoop() {
 }
 
 func (e *Ekilied) httpPollLoop() {
-	pollTicker := time.NewTicker(time.Duration(e.cfg.PollInterval) * time.Second)
-	defer pollTicker.Stop()
-
 	for {
+		interval := time.Duration(e.cfg.PollInterval) * time.Second
+		if e.ws.Connected() {
+			interval = 5 * time.Second
+		}
+
+		timer := time.NewTimer(interval)
 		select {
 		case <-e.ctx.Done():
+			timer.Stop()
 			return
-		case <-pollTicker.C:
-			jobs, err := e.ws.PollJobs(e.ctx)
-			if err != nil {
+		case <-timer.C:
+		}
+
+		jobs, err := e.ws.PollJobs(e.ctx)
+		if err != nil {
+			continue
+		}
+		for _, job := range jobs {
+			if e.engine.IsDispatched(job.ID) {
+				log.Printf("polled job %d already dispatched via WS, skipping", job.ID)
 				continue
 			}
-			for _, job := range jobs {
-				if e.engine.IsDispatched(job.ID) {
-					log.Printf("polled job %d already dispatched via WS, skipping", job.ID)
-					continue
-				}
-				log.Printf("polled job: id=%d action=%s", job.ID, job.Action)
-				go e.engine.HandleJobTrigger(e.ctx, job.ID)
-			}
+			log.Printf("polled job: id=%d action=%s", job.ID, job.Action)
+			go e.engine.HandleJobTrigger(e.ctx, job.ID)
 		}
 	}
 }

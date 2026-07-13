@@ -25,6 +25,32 @@ type JobHandler func(ctx context.Context, jobID uint)
 // The agent can start executing immediately without an HTTP claim round-trip.
 type JobFullHandler func(ctx context.Context, jobID uint, action string, params map[string]any)
 
+// Structured message types for WebSocket communication.
+// Using structs instead of map[string]any reduces heap allocations on every send.
+
+type wsEnvelope struct {
+	V       int    `json:"v"`
+	Type    string `json:"type"`
+	Payload any    `json:"payload"`
+}
+
+type wsErrorPayload struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+type wsContainerListPayload struct {
+	Containers []containerInfo `json:"containers"`
+}
+
+type wsLogLinePayload struct {
+	StreamID  string `json:"stream_id"`
+	Container string `json:"container"`
+	Stream    string `json:"stream"`
+	Line      string `json:"line"`
+	TS        string `json:"ts"`
+}
+
 // WSClient manages the WebSocket connection to the control plane.
 // It handles connection lifecycle (connect, reconnect, disconnect),
 // message dispatch, heartbeats, and provides HTTP helper methods
@@ -84,12 +110,9 @@ func NewWSClient(cfg *config.Config, rootCtx context.Context, onJob JobHandler, 
 
 // sendError queues an error message to be sent over the WebSocket egress channel.
 func (c *WSClient) sendError(errType, message string) {
-	msg, _ := json.Marshal(map[string]any{
-		"v": 1, "type": "error",
-		"payload": map[string]any{
-			"error":   errType,
-			"message": message,
-		},
+	msg, _ := json.Marshal(wsEnvelope{
+		V: 1, Type: "error",
+		Payload: wsErrorPayload{Error: errType, Message: message},
 	})
 	select {
 	case c.egress <- msg:
@@ -359,11 +382,9 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			for _, ct := range containers {
 				infos = append(infos, containerToInfo(ct))
 			}
-			resp, _ := json.Marshal(map[string]any{
-				"v": 1, "type": "container_list",
-				"payload": map[string]any{
-					"containers": infos,
-				},
+			resp, _ := json.Marshal(wsEnvelope{
+				V: 1, Type: "container_list",
+				Payload: wsContainerListPayload{Containers: infos},
 			})
 			log.Printf("[ws] [ts=%s] list_containers: found %d, sending response (%d bytes)", t, len(infos), len(resp))
 			select {
@@ -397,14 +418,14 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			streamCtx, streamCancel := context.WithCancel(ctx)
 			go func() {
 				for line := range logCh {
-					msg, _ := json.Marshal(map[string]any{
-						"v": 1, "type": "log_line",
-						"payload": map[string]any{
-							"stream_id": req.StreamID,
-							"container": req.Container,
-							"stream":    "stdout",
-							"line":      line,
-							"ts":        time.Now().UTC().Format(time.RFC3339),
+					msg, _ := json.Marshal(wsEnvelope{
+						V: 1, Type: "log_line",
+						Payload: wsLogLinePayload{
+							StreamID:  req.StreamID,
+							Container: req.Container,
+							Stream:    "stdout",
+							Line:      line,
+							TS:        time.Now().UTC().Format(time.RFC3339),
 						},
 					})
 					select {
@@ -453,8 +474,9 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 	})
 
 	if c.getConn() != nil {
-		msg, _ := json.Marshal(map[string]any{
-			"v": 1, "type": "heartbeat", "payload": json.RawMessage(payload),
+		msg, _ := json.Marshal(wsEnvelope{
+			V: 1, Type: "heartbeat",
+			Payload: json.RawMessage(payload),
 		})
 		select {
 		case c.egress <- msg:
