@@ -46,6 +46,22 @@ func fmtBytes(b uint64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
+// formatDuration formats a duration as a human-readable string (e.g. "2m 35s").
+func formatDuration(d time.Duration) string {
+	s := int(d.Seconds())
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	m := s / 60
+	s = s % 60
+	if m < 60 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	h := m / 60
+	m = m % 60
+	return fmt.Sprintf("%dh %dm %ds", h, m, s)
+}
+
 // splitLines splits a string into lines, preserving empty trailing content.
 func splitLines(s string) []string {
 	var lines []string

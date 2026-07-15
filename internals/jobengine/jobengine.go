@@ -65,25 +65,30 @@ func (dl *DeployLock) Release(siteName string) {
 
 // LogBatcher buffers log lines and flushes them to the control plane in batches.
 type LogBatcher struct {
-	mu     sync.Mutex
-	lines  []dtos.LogLine
-	jobID  uint
-	client JobClient
-	ctx    context.Context
-	cancel context.CancelFunc
+	mu         sync.Mutex
+	lines      []dtos.LogLine
+	jobID      uint
+	client     JobClient
+	ctx        context.Context
+	cancel     context.CancelFunc
+	lastAppend time.Time
+	startedAt  time.Time
 }
 
 // NewLogBatcher creates a new LogBatcher for the given job and starts the flush loop.
 func NewLogBatcher(ctx context.Context, jobID uint, client JobClient) *LogBatcher {
 	ctx, cancel := context.WithCancel(ctx)
 	lb := &LogBatcher{
-		lines:  make([]dtos.LogLine, 0, 100),
-		jobID:  jobID,
-		client: client,
-		ctx:    ctx,
-		cancel: cancel,
+		lines:      make([]dtos.LogLine, 0, 100),
+		jobID:      jobID,
+		client:     client,
+		ctx:        ctx,
+		cancel:     cancel,
+		startedAt:  time.Now(),
+		lastAppend: time.Now(),
 	}
 	go lb.flushLoop()
+	go lb.heartbeatLoop()
 	return lb
 }
 
@@ -100,6 +105,7 @@ func (lb *LogBatcher) WriteErr(p []byte) (int, error) {
 func (lb *LogBatcher) append(stream string, p []byte) (int, error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
+	lb.lastAppend = time.Now()
 	level := "info"
 	if stream == "stderr" {
 		level = "error"
@@ -147,6 +153,37 @@ func (lb *LogBatcher) flushNow() {
 
 	if err := lb.client.StreamLogs(lb.ctx, lb.jobID, batch); err != nil {
 		log.Printf("log flush error: %v", err)
+	}
+}
+
+// heartbeatLoop sends a periodic "still running" line when no real output for 30s.
+func (lb *LogBatcher) heartbeatLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-lb.ctx.Done():
+			return
+		case <-ticker.C:
+			lb.mu.Lock()
+			sinceLast := time.Since(lb.lastAppend)
+			elapsed := time.Since(lb.startedAt)
+			if sinceLast < 30*time.Second {
+				lb.mu.Unlock()
+				continue
+			}
+			seq := uint64(len(lb.lines) + 1)
+			lb.lines = append(lb.lines, dtos.LogLine{
+				Stream:    "stdout",
+				Line:      fmt.Sprintf("[heartbeat] still running (%s)", formatDuration(elapsed)),
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				Sequence:  seq,
+				Level:     "debug",
+				Source:    "job",
+			})
+			lb.lastAppend = time.Now()
+			lb.mu.Unlock()
+		}
 	}
 }
 
