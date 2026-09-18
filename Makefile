@@ -1,5 +1,5 @@
 .PHONY: all build build-all build-linux build-darwin clean test lint run \
-        deps release checksums
+        deps release release-all publish checksums
 
 # ── Variables ────────────────────────────────────────────────────────────────
 APP_NAME    := ekilied
@@ -72,18 +72,28 @@ build-darwin: deps
 	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-arm64 $(APP_NAME) && tar czf $(APP_NAME)-darwin-arm64.tar.gz $(APP_NAME) && rm $(APP_NAME)
 
 # ── SHA256 checksums ─────────────────────────────────────────────────────────
+# Tolerates missing archive types (linux-only builds produce no .zip files).
 checksums:
 	@echo "==> Generating checksums..."
-	cd $(BUILD_DIR) && shasum -a 256 *.tar.gz *.zip > checksums.txt
+	cd $(BUILD_DIR) && shasum -a 256 *.tar.gz > checksums.txt; \
+	if ls *.zip >/dev/null 2>&1; then shasum -a 256 *.zip >> checksums.txt; fi
 	@cat $(BUILD_DIR)/checksums.txt
 
 # ── GitHub Release ───────────────────────────────────────────────────────────
+# ekilied is a Linux-only daemon, so `release` ships Linux builds only.
 # Usage:
-#   make release                              # auto-bump patch version
-#   make release VERSION=v0.2.0               # specific version
-#   make release VERSION=v0.2.0 FORCE=1       # overwrite existing
+#   make release                              # auto-bump patch version (linux)
+#   make release VERSION=v0.2.0               # specific version (linux)
+#   make release VERSION=v0.2.0 FORCE=1       # overwrite existing (linux)
+#   make release-all [VERSION=...] [FORCE=1]  # all platforms (linux, darwin, windows)
 
-release: clean build-all checksums
+release: RELEASE_ASSETS = $(BUILD_DIR)/*.tar.gz $(BUILD_DIR)/checksums.txt
+release: clean build-linux checksums publish
+
+release-all: RELEASE_ASSETS = $(BUILD_DIR)/*.tar.gz $(BUILD_DIR)/*.zip $(BUILD_DIR)/checksums.txt
+release-all: clean build-all checksums publish
+
+publish:
 	@echo "==> Tagging $(VERSION)..."
 	git tag -f $(VERSION)
 	git push origin $(VERSION) --force
@@ -96,6 +106,4 @@ endif
 	gh release create $(VERSION) \
 		--title "Ekilied $(VERSION)" \
 		--generate-notes \
-		$(BUILD_DIR)/*.tar.gz \
-		$(BUILD_DIR)/*.zip \
-		$(BUILD_DIR)/checksums.txt
+		$(RELEASE_ASSETS)
