@@ -63,6 +63,11 @@ func (dl *DeployLock) Release(siteName string) {
 
 // ── Log batcher ─────────────────────────────────────────────────────
 
+// finalFlushTimeout bounds the last log delivery in Close.
+// It uses a detached context (see Close), so it must stay short to avoid
+// stalling job completion or daemon shutdown when the network is gone.
+const finalFlushTimeout = 10 * time.Second
+
 // LogBatcher buffers log lines and flushes them to the control plane in batches.
 type LogBatcher struct {
 	mu         sync.Mutex
@@ -71,12 +76,15 @@ type LogBatcher struct {
 	client     JobClient
 	ctx        context.Context
 	cancel     context.CancelFunc
+	parent     context.Context
+	closeOnce  sync.Once
 	lastAppend time.Time
 	startedAt  time.Time
 }
 
 // NewLogBatcher creates a new LogBatcher for the given job and starts the flush loop.
 func NewLogBatcher(ctx context.Context, jobID uint, client JobClient) *LogBatcher {
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	lb := &LogBatcher{
 		lines:      make([]dtos.LogLine, 0, 100),
@@ -84,6 +92,7 @@ func NewLogBatcher(ctx context.Context, jobID uint, client JobClient) *LogBatche
 		client:     client,
 		ctx:        ctx,
 		cancel:     cancel,
+		parent:     parent,
 		startedAt:  time.Now(),
 		lastAppend: time.Now(),
 	}
@@ -132,7 +141,9 @@ func (lb *LogBatcher) flushLoop() {
 	for {
 		select {
 		case <-lb.ctx.Done():
-			lb.flushNow()
+			// Do not flush here: Close performs the final flush with a
+			// live (detached) context. Flushing with lb.ctx at this point
+			// would fail with context canceled and drop the last batch.
 			return
 		case <-ticker.C:
 			lb.flushNow()
@@ -142,6 +153,11 @@ func (lb *LogBatcher) flushLoop() {
 
 // flushNow flushes all buffered log lines to the control plane.
 func (lb *LogBatcher) flushNow() {
+	lb.flushNowWith(lb.ctx)
+}
+
+// flushNowWith flushes all buffered log lines using the given context.
+func (lb *LogBatcher) flushNowWith(ctx context.Context) {
 	lb.mu.Lock()
 	if len(lb.lines) == 0 {
 		lb.mu.Unlock()
@@ -151,7 +167,7 @@ func (lb *LogBatcher) flushNow() {
 	lb.lines = nil
 	lb.mu.Unlock()
 
-	if err := lb.client.StreamLogs(lb.ctx, lb.jobID, batch); err != nil {
+	if err := lb.client.StreamLogs(ctx, lb.jobID, batch); err != nil {
 		log.Printf("log flush error: %v", err)
 	}
 }
@@ -188,8 +204,16 @@ func (lb *LogBatcher) heartbeatLoop() {
 }
 
 // Close stops the flush loop and performs a final flush.
+// The final flush uses a context detached from cancellation: lb.ctx is about
+// to be cancelled, and StreamLogs with a cancelled context would fail
+// immediately and drop the last batch. Safe to call multiple times.
 func (lb *LogBatcher) Close() {
-	lb.cancel()
+	lb.closeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(lb.parent), finalFlushTimeout)
+		defer cancel()
+		lb.flushNowWith(ctx)
+		lb.cancel()
+	})
 }
 
 // ── Job engine ──────────────────────────────────────────────────────
