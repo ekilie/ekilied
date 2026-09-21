@@ -3,6 +3,7 @@ package jobengine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,6 +82,18 @@ func (f *fakeJobClient) allLines() []string {
 	for _, b := range f.batches {
 		for _, l := range b {
 			out = append(out, l.Line)
+		}
+	}
+	return out
+}
+
+func (f *fakeJobClient) allSequences() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []uint64
+	for _, b := range f.batches {
+		for _, l := range b {
+			out = append(out, l.Sequence)
 		}
 	}
 	return out
@@ -189,5 +202,104 @@ func TestLogBatcherPeriodicFlushThenClose(t *testing.T) {
 	assertLinesInOrder(t, client.allLines(), "tick", n)
 	if got := client.cancelledCalls(); got != 0 {
 		t.Fatalf("StreamLogs called with cancelled context %d times", got)
+	}
+}
+
+// Regression test for ekilie/ekilied#2: sequences must keep counting across
+// flushes instead of restarting at 1 when the buffer is emptied.
+func TestLogBatcherSequenceMonotonicAcrossFlushes(t *testing.T) {
+	client := &fakeJobClient{}
+	lb := NewLogBatcher(context.Background(), 42, client)
+
+	const total = 250
+	const perFlush = 40
+	for i := 0; i < total; i++ {
+		if _, err := fmt.Fprintf(lb, "line-%d\n", i); err != nil {
+			t.Fatalf("write line %d: %v", i, err)
+		}
+		if (i+1)%perFlush == 0 {
+			lb.flushNow()
+		}
+	}
+	lb.Close()
+
+	if got := client.totalLines(); got != total {
+		t.Fatalf("delivered %d lines, want %d", got, total)
+	}
+	if got := len(client.batches); got < 2 {
+		t.Fatalf("expected multiple flushed batches, got %d", got)
+	}
+
+	seqs := client.allSequences()
+	for i, seq := range seqs {
+		if seq != uint64(i+1) {
+			t.Fatalf("sequence %d = %d, want %d (sequences must be strictly increasing across flushes)", i, seq, i+1)
+		}
+	}
+}
+
+// All writers (Write, WriteErr, Writef, heartbeat) must share one counter.
+func TestLogBatcherSequenceSharedAcrossWriters(t *testing.T) {
+	client := &fakeJobClient{}
+	lb := NewLogBatcher(context.Background(), 43, client)
+
+	if _, err := fmt.Fprint(lb, "stdout-1\n"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := lb.WriteErr([]byte("stderr-1\n")); err != nil {
+		t.Fatalf("WriteErr: %v", err)
+	}
+	lb.Writef("info", "system", "system-%d", 1)
+
+	// Force the heartbeat condition without waiting 30 seconds.
+	lb.lastAppend = time.Now().Add(-time.Minute)
+	lb.maybeWriteHeartbeat(time.Now())
+
+	lb.flushNow()
+
+	if _, err := fmt.Fprint(lb, "stdout-2\n"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	lb.Writef("info", "system", "system-%d", 2)
+	lb.Close()
+
+	want := []string{"stdout-1", "stderr-1", "system-1", "", "stdout-2", "system-2"}
+	lines := client.allLines()
+	if len(lines) != len(want) {
+		t.Fatalf("delivered %d lines, want %d: %q", len(lines), len(want), lines)
+	}
+	for i, w := range want {
+		if w == "" {
+			if !strings.Contains(lines[i], "[heartbeat] still running") {
+				t.Errorf("line %d = %q, want heartbeat line", i, lines[i])
+			}
+			continue
+		}
+		if lines[i] != w {
+			t.Errorf("line %d = %q, want %q", i, lines[i], w)
+		}
+	}
+
+	seqs := client.allSequences()
+	for i, seq := range seqs {
+		if seq != uint64(i+1) {
+			t.Fatalf("sequence %d = %d, want %d (writers must share one counter)", i, seq, i+1)
+		}
+	}
+}
+
+// The heartbeat line must not be emitted while real output is recent.
+func TestLogBatcherHeartbeatSuppressedByOutput(t *testing.T) {
+	client := &fakeJobClient{}
+	lb := NewLogBatcher(context.Background(), 44, client)
+
+	if _, err := fmt.Fprint(lb, "recent output\n"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	lb.maybeWriteHeartbeat(time.Now())
+	lb.Close()
+
+	if got := client.totalLines(); got != 1 {
+		t.Fatalf("delivered %d lines, want 1 (no heartbeat expected)", got)
 	}
 }
