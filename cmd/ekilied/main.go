@@ -159,6 +159,17 @@ func main() {
 		log.Fatalf("failed to migrate database: %v", err)
 	}
 
+	// Heal agents whose registration succeeded but was never written back to
+	// the config file: adopt the saved session instead of attempting a doomed
+	// re-registration with an already-burned token.
+	if !cfg.HasSession() {
+		if err := restoreSessionFromDB(cfg); err != nil {
+			log.Printf("no saved session in local db: %v", err)
+		} else {
+			log.Printf("resumed saved session from local db: agent_id=%s", cfg.AgentID)
+		}
+	}
+
 	if cfg.NeedsRegistration() {
 		log.Println("performing one-time registration handshake...")
 		tmp, err := agent.New(cfg, database.GetDB())
@@ -172,6 +183,12 @@ func main() {
 		cfg.SessionToken = tmp.Config().SessionToken
 		cfg.AgentID = tmp.Config().AgentID
 		log.Printf("registration complete: agent_id=%s", cfg.AgentID)
+		// Persist the session so the agent reconnects after a restart.
+		// A failure here is fatal: continuing would strand the agent on
+		// the next restart once the registration token is burned.
+		if err := config.SaveSession(f.ConfigPath, cfg.AgentID, cfg.SessionToken); err != nil {
+			log.Fatalf("failed to persist session to %s: %v", f.ConfigPath, err)
+		}
 		tmp.Stop()
 	}
 
@@ -190,6 +207,25 @@ func main() {
 
 	log.Println("shutting down...")
 	e.Stop()
+}
+
+// restoreSessionFromDB adopts the most recently saved identity (agent_id +
+// session_token, plus server_id when unset) into cfg. It heals agents whose
+// registration succeeded but was never persisted to the config file.
+func restoreSessionFromDB(cfg *config.Config) error {
+	var ident models.Identity
+	if err := database.GetDB().Order("id desc").First(&ident).Error; err != nil {
+		return fmt.Errorf("load identity: %w", err)
+	}
+	if ident.SessionToken == "" {
+		return fmt.Errorf("saved identity has no session token")
+	}
+	cfg.AgentID = ident.AgentID
+	cfg.SessionToken = ident.SessionToken
+	if cfg.ServerID == 0 {
+		cfg.ServerID = ident.ServerID
+	}
+	return nil
 }
 
 func runSetup(f Flags) error {
