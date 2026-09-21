@@ -15,10 +15,17 @@ import (
 // builds its HTTP request with the passed context and therefore fails
 // immediately on a cancelled one.
 type fakeJobClient struct {
-	mu       sync.Mutex
-	batches  [][]dtos.LogLine
-	ctxErrs  []error
-	streamCh chan struct{} // closed on every StreamLogs call, if set
+	mu          sync.Mutex
+	batches     [][]dtos.LogLine
+	ctxErrs     []error
+	completions []completedCall
+	streamCh    chan struct{} // closed on every StreamLogs call, if set
+}
+
+type completedCall struct {
+	jobID  uint
+	status string
+	errMsg string
 }
 
 func (f *fakeJobClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, error) {
@@ -39,7 +46,22 @@ func (f *fakeJobClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos
 }
 
 func (f *fakeJobClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg, step string, result any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completions = append(f.completions, completedCall{jobID: jobID, status: status, errMsg: errorMsg})
 	return nil
+}
+
+func (f *fakeJobClient) successCompletions() []completedCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []completedCall
+	for _, c := range f.completions {
+		if c.status == "success" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func (f *fakeJobClient) totalLines() int {

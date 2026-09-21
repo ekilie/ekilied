@@ -144,4 +144,4 @@ internals/
 
 ## License
 
-AGPL v3
+AGPL v3 — see [LICENSE](./LICENSE).
