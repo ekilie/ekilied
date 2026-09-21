@@ -151,11 +151,14 @@ func (e *Ekilied) updateCheckLoop() {
 			log.Printf("[update] new version available: %s", release.TagName)
 			if err := jobengine.SelfUpdate(repo, release); err != nil {
 				log.Printf("[update] failed: %v", err)
-			} else {
-				log.Printf("[update] updated, restarting...")
-				exec.Command("systemctl", "restart", "ekilied").Start()
-				return
+				continue
 			}
+			log.Printf("[update] updated, restarting...")
+			if err := jobengine.RestartAgent(e.ctx); err != nil {
+				log.Printf("[update] restart failed: %v (old binary still running, will retry on next check)", err)
+				continue
+			}
+			return
 		}
 	}
 }

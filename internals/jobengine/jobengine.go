@@ -472,13 +472,13 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 			execErr = err
 			break
 		}
-		// Binary replaced — complete job before restarting so the CP gets the result.
-		writeLog("[update] updated successfully, restarting...")
-		lb.flushNow()
-		if err := e.client.CompleteJob(ctx, jobID, "success", "", action, nil); err != nil {
-			log.Printf("complete job %d failed: %v", jobID, err)
+		// Binary replaced. finishSelfUpdate reports success and restarts so
+		// the new binary takes effect. A restart failure is a job failure:
+		// the old binary is still running and the update was not applied.
+		if err := e.finishSelfUpdate(ctx, jobID, action, lb, writeLog); err != nil {
+			execErr = err
+			break
 		}
-		exec.Command("systemctl", "restart", "ekilied").Start()
 		return
 
 	default:
