@@ -23,7 +23,8 @@ import (
 const DefaultMaxConcurrentJobs = 10
 
 // JobClient is the interface the job engine needs to communicate
-// with the control plane. Implemented by agent.WSClient.
+// with the control plane. Implemented by agent.WSClient; tests use
+// fakeJobClient.
 type JobClient interface {
 	ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, error)
 	StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogLine) error
