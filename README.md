@@ -32,12 +32,12 @@
 
 ### Job lifecycle
 
-Jobs arrive over two redundant channels and are always claimed over HTTP:
+Jobs arrive over two redundant channels and are always claimed over HTTP. Every connection is initiated by the agent, so the control plane never dials into your server:
 
-| Channel | Direction | Purpose |
-|---|---|---|
-| WebSocket (primary) | Server to agent | Real-time triggers: `job` (job ID only) and `job_full` (action and params inline) |
-| HTTP poll (fallback) | Agent to server | `GET /agents/jobs` on the configured interval, catches jobs missed while the WebSocket was down |
+| Channel | Purpose |
+|---|---|
+| WebSocket (primary) | Real-time triggers pushed over the agent's outbound connection: `job` (job ID only) and `job_full` (action and params inline) |
+| HTTP poll (fallback) | The agent polls `GET /agents/jobs` over its outbound connection on the configured interval, catching jobs missed while the WebSocket was down |
 
 1. A trigger arrives over WebSocket or is found by the poll loop. In-memory dedup and the atomic claim endpoint make sure a job executes once even if both channels deliver it.
 2. `POST /agents/jobs/:id/claim` claims the job and returns its action and params. A job already claimed elsewhere is rejected with `409`.
