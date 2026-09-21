@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
@@ -150,6 +151,10 @@ func (e *Ekilied) updateCheckLoop() {
 			}
 			log.Printf("[update] new version available: %s", release.TagName)
 			if err := jobengine.SelfUpdate(repo, release); err != nil {
+				if errors.Is(err, jobengine.ErrUpdateInProgress) {
+					log.Printf("[update] another update is already in progress, skipping")
+					continue
+				}
 				log.Printf("[update] failed: %v", err)
 				continue
 			}
