@@ -128,6 +128,17 @@ func (e *Ekilied) Start() error {
 	return nil
 }
 
+// Update collaborators exist as vars so tests can stub the network check,
+// the binary swap, and the systemd/exec restart.
+var (
+	checkForUpdateFunc = jobengine.CheckForUpdate
+	selfUpdateFunc     = jobengine.SelfUpdate
+	restartAgentFunc   = jobengine.RestartAgent
+)
+
+// updateCheckLoop checks for a new release immediately on startup, then every
+// update_check_interval. It returns after an update was applied and the
+// restart was initiated (or when the context is cancelled).
 func (e *Ekilied) updateCheckLoop() {
 	interval := time.Duration(e.cfg.UpdateCheckInterval) * time.Second
 	ticker := time.NewTicker(interval)
@@ -137,35 +148,44 @@ func (e *Ekilied) updateCheckLoop() {
 	log.Printf("[update] checking for updates every %ds", e.cfg.UpdateCheckInterval)
 
 	for {
+		if e.checkAndUpdate(repo) {
+			return
+		}
 		select {
 		case <-e.ctx.Done():
 			return
 		case <-ticker.C:
-			release, available, err := jobengine.CheckForUpdate(repo, config.Version)
-			if err != nil {
-				log.Printf("[update] check failed: %v", err)
-				continue
-			}
-			if !available {
-				continue
-			}
-			log.Printf("[update] new version available: %s", release.TagName)
-			if err := jobengine.SelfUpdate(repo, release); err != nil {
-				if errors.Is(err, jobengine.ErrUpdateInProgress) {
-					log.Printf("[update] another update is already in progress, skipping")
-					continue
-				}
-				log.Printf("[update] failed: %v", err)
-				continue
-			}
-			log.Printf("[update] updated, restarting...")
-			if err := jobengine.RestartAgent(e.ctx); err != nil {
-				log.Printf("[update] restart failed: %v (old binary still running, will retry on next check)", err)
-				continue
-			}
-			return
 		}
 	}
+}
+
+// checkAndUpdate runs one update check/apply cycle and reports whether the
+// loop should stop because the agent is restarting into a new binary.
+func (e *Ekilied) checkAndUpdate(repo string) bool {
+	release, available, err := checkForUpdateFunc(repo, config.Version)
+	if err != nil {
+		log.Printf("[update] check failed: %v", err)
+		return false
+	}
+	if !available {
+		log.Printf("[update] already up to date (%s)", config.Version)
+		return false
+	}
+	log.Printf("[update] new version available: %s", release.TagName)
+	if err := selfUpdateFunc(repo, release); err != nil {
+		if errors.Is(err, jobengine.ErrUpdateInProgress) {
+			log.Printf("[update] another update is already in progress, skipping")
+			return false
+		}
+		log.Printf("[update] failed: %v", err)
+		return false
+	}
+	log.Printf("[update] updated, restarting...")
+	if err := restartAgentFunc(e.ctx); err != nil {
+		log.Printf("[update] restart failed: %v (old binary still running, will retry on next check)", err)
+		return false
+	}
+	return true
 }
 
 func (e *Ekilied) Stop() {
