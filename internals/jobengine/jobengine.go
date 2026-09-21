@@ -30,6 +30,15 @@ type JobClient interface {
 	CompleteJob(ctx context.Context, jobID uint, status, errorMsg, step string, result any) error
 }
 
+// ErrJobAlreadyClaimed reports that a job was claimed by another worker
+// (HTTP 409 from the claim endpoint). Callers must not execute the job.
+var ErrJobAlreadyClaimed = errors.New("job already claimed")
+
+// claimTimeout bounds the claim HTTP call. A claim is one round trip, so a
+// job stuck behind this is treated as a transient failure and left for the
+// poll loop to redeliver.
+var claimTimeout = 10 * time.Second
+
 // ── Deploy lock (per-site) ──────────────────────────────────────────
 
 // DeployLock ensures only one deploy runs per site at a time.
@@ -275,6 +284,13 @@ func NewJobEngine(client JobClient) *JobEngine {
 	}
 }
 
+// claimJob claims the job with a bounded timeout and returns its details.
+func (e *JobEngine) claimJob(ctx context.Context, jobID uint) (*dtos.JobItem, error) {
+	claimCtx, cancel := context.WithTimeout(ctx, claimTimeout)
+	defer cancel()
+	return e.client.ClaimJob(claimCtx, jobID)
+}
+
 // HandleJobTrigger is the entry point when a job trigger arrives (via WS or poll).
 // It atomically claims the job from the control plane and executes it.
 func (e *JobEngine) HandleJobTrigger(ctx context.Context, jobID uint) {
@@ -286,7 +302,7 @@ func (e *JobEngine) HandleJobTrigger(ctx context.Context, jobID uint) {
 	}
 
 	// Atomically claim the job (marks as accepted on backend) and get full details.
-	job, err := e.client.ClaimJob(ctx, jobID)
+	job, err := e.claimJob(ctx, jobID)
 	if err != nil {
 		log.Printf("handle job trigger %d: claim failed: %v", jobID, err)
 		e.clearDispatched(jobID)
@@ -297,26 +313,33 @@ func (e *JobEngine) HandleJobTrigger(ctx context.Context, jobID uint) {
 	e.Execute(ctx, job.ID, job.Action, raw)
 }
 
-// HandleJobTriggerFull is the entry point when a full job payload arrives via WS.
-// It starts executing immediately with the provided params — no HTTP claim round-trip.
-// The claim is sent in the background for DB consistency.
+// HandleJobTriggerFull is the entry point when a full job payload arrives via
+// WS. The job is claimed synchronously before execution, so the backend always
+// sees the claim (accepted/running) before completion, even for jobs that
+// finish in milliseconds. The already-received action and params are used for
+// execution, so the claim response body is not needed.
+//
+// The caller runs this in a goroutine (the WS dispatcher already does).
 func (e *JobEngine) HandleJobTriggerFull(ctx context.Context, jobID uint, action string, params map[string]any) {
 	if !e.markDispatched(jobID) {
 		log.Printf("job %d already dispatched, skipping duplicate trigger", jobID)
 		return
 	}
 
-	raw, _ := json.Marshal(params)
-
-	// Execute immediately with the params we already have
-	go e.Execute(ctx, jobID, action, raw)
-
-	// Claim in background for DB consistency (best-effort)
-	go func() {
-		if _, err := e.client.ClaimJob(ctx, jobID); err != nil {
-			log.Printf("background claim failed for job %d: %v (execution proceeding)", jobID, err)
+	// Claim first: a job another worker owns (409) must not run here, and a
+	// transient failure is left for the poll loop to redeliver.
+	if _, err := e.claimJob(ctx, jobID); err != nil {
+		if errors.Is(err, ErrJobAlreadyClaimed) {
+			log.Printf("job %d already claimed by another worker, skipping", jobID)
+		} else {
+			log.Printf("claim failed for job %d: %v (not executing; poll will redeliver)", jobID, err)
 		}
-	}()
+		e.clearDispatched(jobID)
+		return
+	}
+
+	raw, _ := json.Marshal(params)
+	e.Execute(ctx, jobID, action, raw)
 }
 
 // Execute runs a job action with the given parameters.

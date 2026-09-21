@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/ekilie/ekilied/internals/config"
 	"github.com/ekilie/ekilied/internals/dtos"
+	"github.com/ekilie/ekilied/internals/jobengine"
 )
 
 // JobHandler is the callback signature for when a job trigger arrives via WebSocket.
@@ -568,7 +569,7 @@ func (c *WSClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, err
 
 	if resp.StatusCode == http.StatusConflict {
 		log.Printf("[http] [ts=%s] claim job %d: already claimed (409)", t, jobID)
-		return nil, fmt.Errorf("claim job %d: already claimed", jobID)
+		return nil, fmt.Errorf("claim job %d: %w", jobID, jobengine.ErrJobAlreadyClaimed)
 	}
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[http] [ts=%s] claim job %d: HTTP %d", t, jobID, resp.StatusCode)
