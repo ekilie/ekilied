@@ -6,6 +6,7 @@ package jobengine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -469,6 +470,9 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		}
 		writeLog("[update] found %s (current: %s), downloading...", release.TagName, config.Version)
 		if err := SelfUpdate(repo, release); err != nil {
+			if errors.Is(err, ErrUpdateInProgress) {
+				writeLog("[update] another update is already in progress")
+			}
 			execErr = err
 			break
 		}

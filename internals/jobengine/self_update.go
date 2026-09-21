@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,8 +15,19 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// ErrUpdateInProgress is returned by SelfUpdate when another update (from the
+// 24h auto-update ticker, a control-plane self_update job, or the --update
+// flag) is already running. Callers should treat it as "skip", not "fail".
+var ErrUpdateInProgress = errors.New("self-update already in progress")
+
+// updateInProgress guards the binary swap dance (backup, rename, restore) so
+// two callers can never interleave. Callers that lose the race get
+// ErrUpdateInProgress instead of a spurious rename failure.
+var updateInProgress atomic.Bool
 
 type GitHubRelease struct {
 	TagName string `json:"tag_name"`
@@ -94,7 +106,15 @@ func CheckForUpdate(repo, currentVersion string) (*GitHubRelease, bool, error) {
 // SelfUpdate downloads the latest binary, verifies checksum, and replaces itself.
 // The caller is responsible for triggering the restart (e.g. via systemctl)
 // AFTER completing the job report, to ensure the control plane gets the result.
+//
+// Only one update may run at a time: concurrent callers (auto-update ticker,
+// control-plane job, --update flag) receive ErrUpdateInProgress and must skip.
 func SelfUpdate(repo string, release *GitHubRelease) error {
+	if !updateInProgress.CompareAndSwap(false, true) {
+		return ErrUpdateInProgress
+	}
+	defer updateInProgress.Store(false)
+
 	platform := fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH)
 
 	// Find the archive URL for our platform
