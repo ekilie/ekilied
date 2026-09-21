@@ -79,6 +79,7 @@ type LogBatcher struct {
 	cancel     context.CancelFunc
 	parent     context.Context
 	closeOnce  sync.Once
+	seq        uint64
 	lastAppend time.Time
 	startedAt  time.Time
 }
@@ -112,6 +113,36 @@ func (lb *LogBatcher) WriteErr(p []byte) (int, error) {
 	return lb.append("stderr", p)
 }
 
+// Writef appends a formatted engine-generated line with the given level and
+// source. It shares the same sequence counter as Write, WriteErr, and the
+// heartbeat lines, so sequences stay strictly increasing across flushes.
+func (lb *LogBatcher) Writef(level, source, format string, args ...any) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.appendLineLocked("stdout", level, source, fmt.Sprintf(format, args...))
+}
+
+// nextSeqLocked returns the next strictly increasing sequence number for this
+// job. The counter lives on the batcher, not the buffer, so it survives
+// flushes. Callers must hold lb.mu.
+func (lb *LogBatcher) nextSeqLocked() uint64 {
+	lb.seq++
+	return lb.seq
+}
+
+// appendLineLocked appends one line, assigning it the next sequence number.
+// Callers must hold lb.mu.
+func (lb *LogBatcher) appendLineLocked(stream, level, source, line string) {
+	lb.lines = append(lb.lines, dtos.LogLine{
+		Stream:    stream,
+		Line:      line,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Sequence:  lb.nextSeqLocked(),
+		Level:     level,
+		Source:    source,
+	})
+}
+
 func (lb *LogBatcher) append(stream string, p []byte) (int, error) {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
@@ -124,14 +155,7 @@ func (lb *LogBatcher) append(stream string, p []byte) (int, error) {
 		if line == "" {
 			continue
 		}
-		lb.lines = append(lb.lines, dtos.LogLine{
-			Stream:    stream,
-			Line:      line,
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Sequence:  uint64(len(lb.lines) + 1),
-			Level:     level,
-			Source:    "job",
-		})
+		lb.appendLineLocked(stream, level, "job", line)
 	}
 	return len(p), nil
 }
@@ -173,7 +197,8 @@ func (lb *LogBatcher) flushNowWith(ctx context.Context) {
 	}
 }
 
-// heartbeatLoop sends a periodic "still running" line when no real output for 30s.
+// heartbeatLoop emits a periodic "still running" line when no real output has
+// arrived for 30 seconds.
 func (lb *LogBatcher) heartbeatLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -181,27 +206,24 @@ func (lb *LogBatcher) heartbeatLoop() {
 		select {
 		case <-lb.ctx.Done():
 			return
-		case <-ticker.C:
-			lb.mu.Lock()
-			sinceLast := time.Since(lb.lastAppend)
-			elapsed := time.Since(lb.startedAt)
-			if sinceLast < 30*time.Second {
-				lb.mu.Unlock()
-				continue
-			}
-			seq := uint64(len(lb.lines) + 1)
-			lb.lines = append(lb.lines, dtos.LogLine{
-				Stream:    "stdout",
-				Line:      fmt.Sprintf("[heartbeat] still running (%s)", formatDuration(elapsed)),
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-				Sequence:  seq,
-				Level:     "debug",
-				Source:    "job",
-			})
-			lb.lastAppend = time.Now()
-			lb.mu.Unlock()
+		case now := <-ticker.C:
+			lb.maybeWriteHeartbeat(now)
 		}
 	}
+}
+
+// maybeWriteHeartbeat appends a "still running" line if there has been no
+// output for 30 seconds. Extracted from the loop so tests can drive it
+// without waiting for the ticker.
+func (lb *LogBatcher) maybeWriteHeartbeat(now time.Time) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	if now.Sub(lb.lastAppend) < 30*time.Second {
+		return
+	}
+	lb.appendLineLocked("stdout", "debug", "job",
+		fmt.Sprintf("[heartbeat] still running (%s)", formatDuration(now.Sub(lb.startedAt))))
+	lb.lastAppend = now
 }
 
 // Close stops the flush loop and performs a final flush.
@@ -331,16 +353,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 	defer lb.Close()
 
 	writeLog := func(format string, args ...any) {
-		lb.mu.Lock()
-		lb.lines = append(lb.lines, dtos.LogLine{
-			Stream:    "stdout",
-			Line:      fmt.Sprintf(format, args...),
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Sequence:  uint64(len(lb.lines) + 1),
-			Level:     "info",
-			Source:    "system",
-		})
-		lb.mu.Unlock()
+		lb.Writef("info", "system", format, args...)
 	}
 
 	var execErr error
