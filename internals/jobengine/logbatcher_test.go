@@ -21,6 +21,10 @@ type fakeJobClient struct {
 	ctxErrs     []error
 	completions []completedCall
 	streamCh    chan struct{} // closed on every StreamLogs call, if set
+	claimJob    *dtos.JobItem
+	claimErr    error
+	claimBlock  bool // when true, ClaimJob blocks until its context is done
+	callOrder   []string
 }
 
 type completedCall struct {
@@ -29,13 +33,36 @@ type completedCall struct {
 	errMsg string
 }
 
+func (f *fakeJobClient) record(call string) {
+	f.callOrder = append(f.callOrder, call)
+}
+
 func (f *fakeJobClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, error) {
+	f.mu.Lock()
+	f.record("claim")
+	block := f.claimBlock
+	f.mu.Unlock()
+
+	if block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
+	if f.claimJob != nil {
+		return f.claimJob, nil
+	}
 	return &dtos.JobItem{ID: jobID}, nil
 }
 
 func (f *fakeJobClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogLine) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.record("stream")
 	f.ctxErrs = append(f.ctxErrs, ctx.Err())
 	cp := append([]dtos.LogLine(nil), lines...)
 	f.batches = append(f.batches, cp)
@@ -49,8 +76,15 @@ func (f *fakeJobClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos
 func (f *fakeJobClient) CompleteJob(ctx context.Context, jobID uint, status, errorMsg, step string, result any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.record("complete")
 	f.completions = append(f.completions, completedCall{jobID: jobID, status: status, errMsg: errorMsg})
 	return nil
+}
+
+func (f *fakeJobClient) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.callOrder...)
 }
 
 func (f *fakeJobClient) successCompletions() []completedCall {
