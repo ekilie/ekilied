@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -196,6 +197,113 @@ func (c *Config) NeedsRegistration() bool {
 
 func (c *Config) HasSession() bool {
 	return c.SessionToken != ""
+}
+
+// SaveSession writes agent_id and session_token back to the YAML config file
+// after an in-process registration, so the agent can reconnect after a
+// restart. All other keys, comments, and blank lines are preserved
+// byte-for-byte; only the two credential lines are replaced (or appended
+// when missing). The write is atomic (temp file + rename) and the file mode
+// is forced to 0600 since it now holds credentials.
+func SaveSession(path, agentID, sessionToken string) error {
+	if path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	if agentID == "" || sessionToken == "" {
+		return fmt.Errorf("agent_id and session_token are required")
+	}
+
+	var lines []string
+	if data, err := os.ReadFile(path); err == nil {
+		lines = strings.Split(string(data), "\n")
+	}
+
+	seenAgent, seenSession := false, false
+	out := make([]string, 0, len(lines)+2)
+	for _, line := range lines {
+		switch flatKeyOf(line) {
+		case "agent_id":
+			out = append(out, "agent_id: "+yamlScalar(agentID))
+			seenAgent = true
+		case "session_token":
+			out = append(out, "session_token: "+yamlScalar(sessionToken))
+			seenSession = true
+		default:
+			out = append(out, line)
+		}
+	}
+	if !seenAgent {
+		out = append(out, "agent_id: "+yamlScalar(agentID))
+	}
+	if !seenSession {
+		out = append(out, "session_token: "+yamlScalar(sessionToken))
+	}
+	content := strings.Join(out, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create config dir: %w", err)
+		}
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".agent.yml.*")
+	if err != nil {
+		return fmt.Errorf("create temp config: %w", err)
+	}
+	tmpName := tmp.Name()
+	// Best effort cleanup if anything below fails; on success the temp file
+	// is renamed away and Remove is a no-op error we ignore.
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		return fmt.Errorf("chmod temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
+	}
+	return nil
+}
+
+// flatKeyOf returns the mapping key of a top-level "key: value" YAML line,
+// or "" for blank lines, comments, and indented (nested) lines.
+func flatKeyOf(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return ""
+	}
+	if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+		return ""
+	}
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
+}
+
+// yamlScalar renders a plain string as a YAML scalar, quoting it when it
+// contains characters that would otherwise change its meaning.
+func yamlScalar(s string) string {
+	if s == "" {
+		return `""`
+	}
+	if strings.ContainsAny(s, "#:\"' \t\n\r") || strings.HasPrefix(s, "-") {
+		return strconv.Quote(s)
+	}
+	return s
 }
 
 // ── YAML parser (no dependency) ──────────────────────────────────────────
