@@ -397,10 +397,12 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			for _, ct := range containers {
 				infos = append(infos, containerToInfo(ct))
 			}
-			resp, _ := json.Marshal(wsEnvelope{
-				V: 1, Type: "container_list",
-				Payload: wsContainerListPayload{Containers: infos},
-			})
+			resp, err := containerListWSMessage(infos)
+			if err != nil {
+				log.Printf("[ws] [ts=%s] list_containers: marshal error: %v", t, err)
+				c.sendError("marshal_error", err.Error())
+				continue
+			}
 			log.Printf("[ws] [ts=%s] list_containers: found %d, sending response (%d bytes)", t, len(infos), len(resp))
 			select {
 			case c.egressLow <- resp:
@@ -436,34 +438,55 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 // ── Heartbeat (prefer WS, fallback HTTP) ─────────────────────────────────
 
+// heartbeatWSMessage builds the WebSocket envelope for a heartbeat. The
+// request struct is marshaled once, as part of the envelope, instead of being
+// pre-marshaled into a json.RawMessage and marshaled again.
+func heartbeatWSMessage(req dtos.HeartbeatRequest) ([]byte, error) {
+	return json.Marshal(wsEnvelope{V: 1, Type: "heartbeat", Payload: req})
+}
+
+// containerListWSMessage builds the WebSocket envelope for a container
+// listing. The payload struct is marshaled once, as part of the envelope.
+func containerListWSMessage(infos []containerInfo) ([]byte, error) {
+	return json.Marshal(wsEnvelope{
+		V: 1, Type: "container_list",
+		Payload: wsContainerListPayload{Containers: infos},
+	})
+}
+
 // SendHeartbeat attempts to send metrics over the WebSocket egress channel.
 // If the channel is full, it falls back to an HTTP POST to /agents/heartbeat.
 func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken string, metrics dtos.HeartbeatMetrics) error {
 	t := ts()
-	payload, _ := json.Marshal(dtos.HeartbeatRequest{
+	heartbeat := dtos.HeartbeatRequest{
 		AgentID:  agentID,
 		ServerID: c.cfg.ServerID,
 		TS:       time.Now().UTC().Format(time.RFC3339),
 		Metrics:  metrics,
-	})
+	}
 
 	if c.getConn() != nil {
-		msg, _ := json.Marshal(wsEnvelope{
-			V: 1, Type: "heartbeat",
-			Payload: json.RawMessage(payload),
-		})
-		select {
-		case c.egress <- msg:
-			log.Printf("[ws] [ts=%s] heartbeat sent via WS cpu=%.1f%% mem=%.1f%%", t, metrics.CPUPercent, metrics.MemoryPercent)
-			return nil
-		default:
-			log.Printf("[ws] [ts=%s] WS egress full, falling back to HTTP heartbeat", t)
+		if msg, err := heartbeatWSMessage(heartbeat); err == nil {
+			select {
+			case c.egress <- msg:
+				log.Printf("[ws] [ts=%s] heartbeat sent via WS cpu=%.1f%% mem=%.1f%%", t, metrics.CPUPercent, metrics.MemoryPercent)
+				return nil
+			default:
+				log.Printf("[ws] [ts=%s] WS egress full, falling back to HTTP heartbeat", t)
+			}
+		} else {
+			log.Printf("[ws] [ts=%s] heartbeat marshal error: %v, falling back to HTTP", t, err)
 		}
 	} else {
 		log.Printf("[ws] [ts=%s] WS not connected, falling back to HTTP heartbeat", t)
 	}
 
-	// HTTP fallback
+	// HTTP fallback. This is the only other marshal of the request, and only
+	// one of the two paths ever runs.
+	payload, err := json.Marshal(heartbeat)
+	if err != nil {
+		return fmt.Errorf("marshal heartbeat: %w", err)
+	}
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.cfg.APIURL+"/agents/heartbeat", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+sessionToken)
