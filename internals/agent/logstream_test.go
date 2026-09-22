@@ -257,3 +257,16 @@ func TestLogStreamCancelledOnConnectionDrop(t *testing.T) {
 		t.Fatalf("active streams = %d, want 0 after connection drop", got)
 	}
 }
+
+// The log line envelope must carry the payload struct directly (one marshal)
+// and keep the exact wire format the dashboard expects.
+func TestLogLineWSMessageWireFormat(t *testing.T) {
+	got, err := logLineWSMessage("s1", "web", "hello", "2026-09-22T10:00:00Z")
+	if err != nil {
+		t.Fatalf("logLineWSMessage: %v", err)
+	}
+	want := `{"v":1,"type":"log_line","payload":{"stream_id":"s1","container":"web","stream":"stdout","line":"hello","ts":"2026-09-22T10:00:00Z"}}`
+	if string(got) != want {
+		t.Fatalf("wire format changed:\n got: %s\nwant: %s", got, want)
+	}
+}

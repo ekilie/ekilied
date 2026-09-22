@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ekilie/ekilied/internals/dtos"
 )
 
 func firstCallIndex(calls []string, want string) int {
@@ -156,5 +158,54 @@ func TestExecuteRecoversFromPanic(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("engine did not process a job after a recovered panic")
+	}
+}
+
+// marshalBomb panics if anything tries to JSON-marshal it. It proves job
+// params travel from claim/WS payload to Execute without a marshal round
+// trip: any such trip would trip the bomb.
+type marshalBomb struct{}
+
+func (marshalBomb) MarshalJSON() ([]byte, error) {
+	panic("job params were marshaled")
+}
+
+// Regression test for ekilie/ekilied#16 (job_full path).
+func TestHandleJobTriggerFullDoesNotMarshalParams(t *testing.T) {
+	client := &fakeJobClient{}
+	e := NewJobEngine(client)
+
+	params := map[string]any{"site_name": "demo", "bomb": marshalBomb{}}
+	e.HandleJobTriggerFull(context.Background(), 90, "unknown_test_action", params)
+
+	comps := client.allCompletions()
+	if len(comps) != 1 || comps[0].jobID != 90 {
+		t.Fatalf("completions = %+v, want one for job 90", comps)
+	}
+	if comps[0].status != "failed" {
+		t.Fatalf("status = %q, want failed (unknown action)", comps[0].status)
+	}
+	if strings.Contains(comps[0].errMsg, "marshaled") {
+		t.Fatalf("params were marshaled on dispatch: %q", comps[0].errMsg)
+	}
+}
+
+// Regression test for ekilie/ekilied#16 (claim path).
+func TestHandleJobTriggerDoesNotMarshalParams(t *testing.T) {
+	client := &fakeJobClient{claimJob: &dtos.JobItem{
+		ID:     91,
+		Action: "unknown_test_action",
+		Params: map[string]any{"site_name": "demo", "bomb": marshalBomb{}},
+	}}
+	e := NewJobEngine(client)
+
+	e.HandleJobTrigger(context.Background(), 91)
+
+	comps := client.allCompletions()
+	if len(comps) != 1 || comps[0].jobID != 91 {
+		t.Fatalf("completions = %+v, want one for job 91", comps)
+	}
+	if strings.Contains(comps[0].errMsg, "marshaled") {
+		t.Fatalf("params were marshaled on dispatch: %q", comps[0].errMsg)
 	}
 }

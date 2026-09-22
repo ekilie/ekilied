@@ -5,7 +5,6 @@ package jobengine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -311,8 +310,9 @@ func (e *JobEngine) HandleJobTrigger(ctx context.Context, jobID uint) {
 		return
 	}
 
-	raw, _ := json.Marshal(job.Params)
-	e.Execute(ctx, job.ID, job.Action, raw)
+	// job.Params is already a decoded map; pass it through so it is never
+	// marshaled and unmarshaled again.
+	e.Execute(ctx, job.ID, job.Action, job.Params)
 }
 
 // HandleJobTriggerFull is the entry point when a full job payload arrives via
@@ -340,12 +340,12 @@ func (e *JobEngine) HandleJobTriggerFull(ctx context.Context, jobID uint, action
 		return
 	}
 
-	raw, _ := json.Marshal(params)
-	e.Execute(ctx, jobID, action, raw)
+	// The received params are already decoded; pass them straight through.
+	e.Execute(ctx, jobID, action, params)
 }
 
 // Execute runs a job action with the given parameters.
-func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawParams json.RawMessage) {
+func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, params map[string]any) {
 	log.Printf("executing job %d: action=%s", jobID, action)
 
 	// Dedup: skip if this job is already being executed
@@ -382,9 +382,6 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 			lb.Close()
 		}
 	}()
-
-	var params map[string]any
-	json.Unmarshal(rawParams, &params)
 
 	siteName, _ := params["site_name"].(string)
 

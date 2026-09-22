@@ -162,6 +162,22 @@ func (c *WSClient) stopLogStream(payload json.RawMessage) {
 	}
 }
 
+// logLineWSMessage builds the WS envelope for one Docker log line. The
+// payload struct is marshaled once, as part of the envelope, instead of being
+// pre-marshaled into a json.RawMessage and marshaled again.
+func logLineWSMessage(streamID, container, line, ts string) ([]byte, error) {
+	return json.Marshal(wsEnvelope{
+		V: 1, Type: "log_line",
+		Payload: wsLogLinePayload{
+			StreamID:  streamID,
+			Container: container,
+			Stream:    "stdout",
+			Line:      line,
+			TS:        ts,
+		},
+	})
+}
+
 // streamContainerLogs follows one container's logs and forwards them to the
 // control plane over egressLow. It returns when the stream is cancelled, the
 // connection drops, or the container stops.
@@ -174,16 +190,7 @@ func (c *WSClient) streamContainerLogs(streamCtx context.Context, req logStreamR
 	go func() {
 		defer forwarder.Done()
 		for line := range logCh {
-			msg, err := json.Marshal(wsEnvelope{
-				V: 1, Type: "log_line",
-				Payload: wsLogLinePayload{
-					StreamID:  req.StreamID,
-					Container: req.Container,
-					Stream:    "stdout",
-					Line:      truncateLogLine(line),
-					TS:        time.Now().UTC().Format(time.RFC3339),
-				},
-			})
+			msg, err := logLineWSMessage(req.StreamID, req.Container, truncateLogLine(line), time.Now().UTC().Format(time.RFC3339))
 			if err != nil {
 				continue
 			}
