@@ -3,6 +3,7 @@ package jobengine
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,14 +14,14 @@ import (
 const supervisorConfDir = "/etc/supervisor/conf.d"
 
 // installSupervisor installs supervisor via apt and enables/starts the service.
-func installSupervisor(ctx context.Context) error {
-	if err := run(ctx, "apt-get", "install", "-y", "supervisor"); err != nil {
+func installSupervisor(ctx context.Context, out io.Writer) error {
+	if err := run(ctx, out, "apt-get", "install", "-y", "supervisor"); err != nil {
 		return err
 	}
-	if err := run(ctx, "systemctl", "enable", "supervisor"); err != nil {
+	if err := run(ctx, out, "systemctl", "enable", "supervisor"); err != nil {
 		return err
 	}
-	return run(ctx, "systemctl", "start", "supervisor")
+	return run(ctx, out, "systemctl", "start", "supervisor")
 }
 
 // daemonProgramName returns the supervisor program name for a site daemon.
@@ -114,9 +115,9 @@ func deleteSupervisorConfig(siteName, name string) error {
 }
 
 // restartSupervisorProgram restarts a supervisor-managed program.
-func restartSupervisorProgram(ctx context.Context, siteName, name string) error {
+func restartSupervisorProgram(ctx context.Context, out io.Writer, siteName, name string) error {
 	progName := daemonProgramName(siteName, name)
-	return run(ctx, "supervisorctl", "restart", progName)
+	return run(ctx, out, "supervisorctl", "restart", progName)
 }
 
 // cleanupSupervisorForSite removes all supervisor programs and configs

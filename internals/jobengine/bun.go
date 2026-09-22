@@ -3,28 +3,29 @@ package jobengine
 import (
 	"context"
 	"fmt"
+	"io"
 )
 
 // installBun installs Bun (JavaScript runtime + package manager) on Debian/Ubuntu-based systems.
-func installBun(ctx context.Context, logf func(string, ...any)) error {
+func installBun(ctx context.Context, out io.Writer, logf func(string, ...any)) error {
 	// Install prerequisites
 	logf("[system] installing prerequisites (unzip, curl)...")
-	if err := run(ctx, "apt-get", "update", "-qq"); err != nil {
+	if err := run(ctx, out, "apt-get", "update", "-qq"); err != nil {
 		return fmt.Errorf("apt update: %w", err)
 	}
-	if err := run(ctx, "apt-get", "install", "-y", "curl", "unzip"); err != nil {
+	if err := run(ctx, out, "apt-get", "install", "-y", "curl", "unzip"); err != nil {
 		return fmt.Errorf("prerequisites install: %w", err)
 	}
 
 	// Install Bun using the official installer
 	logf("[system] installing Bun via official script...")
-	if err := run(ctx, "bash", "-c", "curl -fsSL https://bun.sh/install | bash"); err != nil {
+	if err := run(ctx, out, "bash", "-c", "curl -fsSL https://bun.sh/install | bash"); err != nil {
 		return fmt.Errorf("bun install script: %w", err)
 	}
 
 	// Make Bun available system-wide (for all users)
 	logf("[system] making Bun available system-wide...")
-	if err := run(ctx, "bash", "-c", `
+	if err := run(ctx, out, "bash", "-c", `
 		if [ -f "$HOME/.bun/bin/bun" ]; then
 			ln -sf "$HOME/.bun/bin/bun" /usr/local/bin/bun
 		fi

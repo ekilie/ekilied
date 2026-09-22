@@ -396,12 +396,12 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 	switch action {
 	case "site_create":
 		writeLog("[site] creating site %s...", siteName)
-		execErr = createSite(ctx, siteName, params, writeLog)
+		execErr = createSite(ctx, lb, siteName, params, writeLog)
 
 	case "site_delete":
 		writeLog("[site] deleting site %s...", siteName)
 		cleanupSupervisorForSite(siteName)
-		execErr = removeSiteDir(ctx, siteName)
+		execErr = removeSiteDir(siteName)
 
 	case "site_sync":
 		writeLog("[sync] syncing site %s...", siteName)
@@ -413,13 +413,13 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 
 	case "install_nginx":
 		writeLog("[system] installing nginx...")
-		execErr = installNginx(ctx)
+		execErr = installNginx(ctx, lb)
 
 	case "install_node":
-		execErr = installNode(ctx, writeLog)
+		execErr = installNode(ctx, lb, writeLog)
 
 	case "install_bun":
-		execErr = installBun(ctx, writeLog)
+		execErr = installBun(ctx, lb, writeLog)
 
 	case "deploy":
 		writeLog("[deploy] deploying %s...", siteName)
@@ -448,7 +448,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 
 	case "site_raw_nginx":
 		rawCfg, _ := params["raw_config"].(string)
-		execErr = writeNginxConfig(ctx, siteName, rawCfg)
+		execErr = writeNginxConfig(ctx, lb, siteName, rawCfg)
 
 	case "read_nginx_config":
 		writeLog("[nginx] reading config for %s...", siteName)
@@ -468,7 +468,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 		domain, _ := params["domain"].(string)
 		email, _ := params["email"].(string)
 		writeLog("[ssl] issuing certificate for %s...", domain)
-		execErr = issueSSL(ctx, domain, email)
+		execErr = issueSSL(ctx, lb, domain, email)
 
 	case "ssh_key_add":
 		publicKey, _ := params["public_key"].(string)
@@ -480,11 +480,11 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 
 	case "service_restart":
 		service, _ := params["service"].(string)
-		execErr = restartService(ctx, service)
+		execErr = restartService(ctx, lb, service)
 
 	case "daemon_install_supervisor":
 		writeLog("[daemon] installing supervisor...")
-		execErr = installSupervisor(ctx)
+		execErr = installSupervisor(ctx, lb)
 
 	case "daemon_create":
 		name, _ := params["name"].(string)
@@ -498,7 +498,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 
 	case "daemon_restart":
 		name, _ := params["name"].(string)
-		execErr = restartSupervisorProgram(ctx, siteName, name)
+		execErr = restartSupervisorProgram(ctx, lb, siteName, name)
 
 	case "diagnostics":
 		e.runDiagnostics(ctx, jobID, action, lb, writeLog)
@@ -541,8 +541,10 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 	errMsg := ""
 	if execErr != nil {
 		status = "failed"
-		errMsg = execErr.Error()
-		log.Printf("job %d failed: %v", jobID, execErr)
+		// Backstop: run() already bounds its own error tail, but any other
+		// error must not ship megabytes to the control plane either.
+		errMsg = truncateError(execErr.Error(), maxJobErrorBytes)
+		log.Printf("job %d failed: %s", jobID, errMsg)
 	}
 
 	writeLog("[complete] %s", status)
@@ -558,7 +560,7 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 // the dashboard. It must never panic itself: it runs while the process is
 // already recovering, so any second failure is logged and swallowed.
 func (e *JobEngine) reportJobPanic(ctx context.Context, jobID uint, action string, lb *LogBatcher, r any) {
-	errMsg := fmt.Sprintf("panic: %v", r)
+	errMsg := truncateError(fmt.Sprintf("panic: %v", r), maxJobErrorBytes)
 	log.Printf("job %d panicked: %s\n%s", jobID, errMsg, debug.Stack())
 
 	defer func() {
