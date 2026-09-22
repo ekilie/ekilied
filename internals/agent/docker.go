@@ -12,6 +12,15 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
+// dockerService is the subset of DockerService used by the WS client.
+// Extracted as an interface so tests can substitute a fake without a Docker
+// daemon.
+type dockerService interface {
+	ListContainers(ctx context.Context) ([]types.Container, error)
+	StreamLogs(ctx context.Context, containerName string, tail int, logCh chan<- string) error
+	Close() error
+}
+
 type DockerService struct {
 	cli   *client.Client
 	agent *Ekilied

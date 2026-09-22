@@ -53,7 +53,7 @@ WebSocket connections are kept alive with a 30 second ping, and reconnect automa
 | Registration | `POST /agents/register` | One-time, authenticated with the instance registration token |
 | Heartbeat | WS `heartbeat`, fallback `POST /agents/heartbeat` | Every 30 seconds by default: CPU, memory, disk, load average, uptime, hostname, platform, kernel arch, agent version |
 | Capabilities | Sent during registration | Probes for `nginx`, `node`, `npm`, `docker`, `certbot`, `git`, `systemctl`, `php`, `composer` |
-| Docker | WS `list_containers`, `log_stream` | Only when the Docker socket is reachable; streams container logs with a tail |
+| Docker | WS `list_containers`, `log_stream`, `log_stream_stop` | Only when the Docker socket is reachable; streams container logs with a bounded tail, up to 5 concurrent streams per connection |
 | Token rotation | WS `token_rotated` | Updates the in-memory session token |
 
 ### Session lifecycle
