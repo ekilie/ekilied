@@ -12,18 +12,20 @@ import (
 // createSiteDir creates the site directory. Native calls replace the old
 // mkdir/rm shell-outs: no extra process, no captured output.
 func createSiteDir(siteName string) error {
-	if siteName == "" {
-		return fmt.Errorf("site name is required")
+	dir, err := siteDirPath(siteName)
+	if err != nil {
+		return err
 	}
-	return os.MkdirAll(filepath.Join("/opt/ekilie/sites", siteName), 0755)
+	return os.MkdirAll(dir, 0755)
 }
 
 // removeSiteDir removes the site directory and all its contents.
 func removeSiteDir(siteName string) error {
-	if siteName == "" {
-		return fmt.Errorf("site name is required")
+	dir, err := siteDirPath(siteName)
+	if err != nil {
+		return err
 	}
-	return os.RemoveAll(filepath.Join("/opt/ekilie/sites", siteName))
+	return os.RemoveAll(dir)
 }
 
 // createSite performs full first-time site setup: creates the site and repo
@@ -32,10 +34,16 @@ func removeSiteDir(siteName string) error {
 // or issue SSL — those are handled by separate deploy and ssl_issue jobs.
 // Idempotent: safe to re-run for an existing site.
 func createSite(ctx context.Context, out io.Writer, siteName string, params map[string]any, logf func(string, ...any)) error {
-	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	repoDir := siteDir + "/current"
+	dir, err := siteDirPath(siteName)
+	if err != nil {
+		return err
+	}
+	repoDir, err := siteRepoPath(siteName)
+	if err != nil {
+		return err
+	}
 
-	logf("[site] creating directories %s...", siteDir)
+	logf("[site] creating directories %s...", dir)
 	if err := createSiteDir(siteName); err != nil {
 		return fmt.Errorf("mkdir site: %w", err)
 	}
@@ -78,8 +86,10 @@ func (e *JobEngine) syncSite(ctx context.Context, siteName string, params map[st
 	}
 	defer e.deployLk.Release(siteName)
 
-	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	repoDir := siteDir + "/current"
+	repoDir, err := siteRepoPath(siteName)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(repoDir, 0755); err != nil {
 		return fmt.Errorf("mkdir site: %w", err)
 	}
@@ -103,14 +113,19 @@ func (e *JobEngine) syncSite(ctx context.Context, siteName string, params map[st
 // runSiteCommand runs an arbitrary shell command inside the site directory.
 // Env is loaded from the .env file on disk (if it exists).
 func runSiteCommand(ctx context.Context, siteName string, params map[string]any, lb *LogBatcher) error {
-	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	repoDir := siteDir + "/current"
+	repoDir, err := siteRepoPath(siteName)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(repoDir, 0755); err != nil {
 		return fmt.Errorf("mkdir site: %w", err)
 	}
 
 	// Ensure .env exists
-	envPath := resolveEnvPath(siteName, params)
+	envPath, err := resolveEnvPath(siteName, params)
+	if err != nil {
+		return err
+	}
 	parentDir := filepath.Dir(envPath)
 	os.MkdirAll(parentDir, 0755)
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {
