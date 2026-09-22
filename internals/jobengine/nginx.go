@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 // installNginx installs nginx via apt.
@@ -13,15 +14,31 @@ func installNginx(ctx context.Context, out io.Writer) error {
 	return run(ctx, out, "apt-get", "install", "-y", "nginx")
 }
 
+// nginxConfigPath returns the config file path for a site, guaranteed to live
+// inside nginxSitesAvailable.
+func nginxConfigPath(siteName string) (string, error) {
+	if err := validateSiteName(siteName); err != nil {
+		return "", err
+	}
+	path := filepath.Join(nginxSitesAvailable, siteName)
+	if !isContained(nginxSitesAvailable, path) {
+		return "", fmt.Errorf("nginx config path %q escapes %s", path, nginxSitesAvailable)
+	}
+	return path, nil
+}
+
 // writeNginxConfig writes an nginx site config, validates it, creates a symlink
 // in sites-enabled, enables nginx, and reloads.
 func writeNginxConfig(ctx context.Context, out io.Writer, siteName, nginxConfig string) error {
-	path := fmt.Sprintf("/etc/nginx/sites-available/%s", siteName)
+	path, err := nginxConfigPath(siteName)
+	if err != nil {
+		return err
+	}
 	if err := writeFile(path, nginxConfig); err != nil {
 		return err
 	}
 	// Create symlink in sites-enabled (removes first to handle re-creates)
-	symlink := fmt.Sprintf("/etc/nginx/sites-enabled/%s", siteName)
+	symlink := filepath.Join("/etc/nginx/sites-enabled", siteName)
 	os.Remove(symlink)
 	if err := os.Symlink(path, symlink); err != nil {
 		return fmt.Errorf("create symlink: %w", err)
@@ -35,7 +52,10 @@ func writeNginxConfig(ctx context.Context, out io.Writer, siteName, nginxConfig 
 
 // readNginxConfig reads the nginx site config from disk and returns its content.
 func readNginxConfig(siteName string) (string, error) {
-	path := fmt.Sprintf("/etc/nginx/sites-available/%s", siteName)
+	path, err := nginxConfigPath(siteName)
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read nginx config: %w", err)

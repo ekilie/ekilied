@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
-
-// supervisorConfDir is the directory where supervisor program configs are stored.
-const supervisorConfDir = "/etc/supervisor/conf.d"
 
 // installSupervisor installs supervisor via apt and enables/starts the service.
 func installSupervisor(ctx context.Context, out io.Writer) error {
@@ -27,6 +25,22 @@ func installSupervisor(ctx context.Context, out io.Writer) error {
 // daemonProgramName returns the supervisor program name for a site daemon.
 func daemonProgramName(siteName, name string) string {
 	return fmt.Sprintf("%s-%s", siteName, name)
+}
+
+// daemonProgramPath returns the supervisor config file for a site daemon,
+// guaranteed to live inside supervisorConfDir.
+func daemonProgramPath(siteName, name string) (string, error) {
+	if err := validateSiteName(siteName); err != nil {
+		return "", err
+	}
+	if err := validateDaemonName(name); err != nil {
+		return "", err
+	}
+	path := filepath.Join(supervisorConfDir, daemonProgramName(siteName, name)+".conf")
+	if !isContained(supervisorConfDir, path) {
+		return "", fmt.Errorf("supervisor config path %q escapes %s", path, supervisorConfDir)
+	}
+	return path, nil
 }
 
 // ensureUser creates a system user if it doesn't already exist.
@@ -46,11 +60,19 @@ func createSupervisorConfig(siteName, name, command string, scale int, params ma
 		scale = 1
 	}
 
+	path, err := daemonProgramPath(siteName, name)
+	if err != nil {
+		return err
+	}
+	dir, err := siteDirPath(siteName)
+	if err != nil {
+		return err
+	}
+
 	ensureUser("ekilie")
 
 	progName := daemonProgramName(siteName, name)
-	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	logDir := siteDir + "/logs"
+	logDir := filepath.Join(dir, "logs")
 	os.MkdirAll(logDir, 0755)
 
 	// Build environment vars from params
@@ -77,10 +99,9 @@ stopwaitsecs=10
 startretries=3
 stdout_logfile=%s/%s.log
 stderr_logfile=%s/%s-error.log
-%s`, progName, command, siteDir, scale,
+%s`, progName, command, dir, scale,
 		logDir, name, logDir, name, envSection)
 
-	path := filepath.Join(supervisorConfDir, progName+".conf")
 	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
 		return fmt.Errorf("write supervisor conf: %w", err)
 	}
@@ -97,8 +118,11 @@ stderr_logfile=%s/%s-error.log
 
 // deleteSupervisorConfig stops and removes a supervisor program and its config.
 func deleteSupervisorConfig(siteName, name string) error {
+	path, err := daemonProgramPath(siteName, name)
+	if err != nil {
+		return err
+	}
 	progName := daemonProgramName(siteName, name)
-	path := filepath.Join(supervisorConfDir, progName+".conf")
 
 	// Stop and remove the program
 	exec.Command("supervisorctl", "stop", progName).Run()
@@ -116,6 +140,12 @@ func deleteSupervisorConfig(siteName, name string) error {
 
 // restartSupervisorProgram restarts a supervisor-managed program.
 func restartSupervisorProgram(ctx context.Context, out io.Writer, siteName, name string) error {
+	if err := validateSiteName(siteName); err != nil {
+		return err
+	}
+	if err := validateDaemonName(name); err != nil {
+		return err
+	}
 	progName := daemonProgramName(siteName, name)
 	return run(ctx, out, "supervisorctl", "restart", progName)
 }
@@ -123,6 +153,10 @@ func restartSupervisorProgram(ctx context.Context, out io.Writer, siteName, name
 // cleanupSupervisorForSite removes all supervisor programs and configs
 // associated with the given site name. Called when a site is deleted.
 func cleanupSupervisorForSite(siteName string) {
+	if err := validateSiteName(siteName); err != nil {
+		log.Printf("supervisor cleanup skipped: %v", err)
+		return
+	}
 	pattern := filepath.Join(supervisorConfDir, siteName+"-*.conf")
 	files, _ := filepath.Glob(pattern)
 	for _, f := range files {

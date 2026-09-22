@@ -20,17 +20,18 @@ func writeEnvFile(siteName string, params map[string]any) error {
 		return nil
 	}
 
-	// Default: write .env at site root (widely expected location)
-	envPath := fmt.Sprintf("/opt/ekilie/sites/%s/.env", siteName)
-
-	// Allow deploy script to specify a custom path via env_path param
-	if customPath, ok := params["env_path"].(string); ok && customPath != "" {
-		envPath = customPath
+	// Resolve inside the site's checkout directory; env_path may not be
+	// absolute or escape it.
+	envPath, err := resolveEnvPath(siteName, params)
+	if err != nil {
+		return err
 	}
 
 	// Ensure parent directory exists
 	parentDir := filepath.Dir(envPath)
-	os.MkdirAll(parentDir, 0755)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		return fmt.Errorf("mkdir env dir: %w", err)
+	}
 
 	var buf []byte
 	for k, v := range env {

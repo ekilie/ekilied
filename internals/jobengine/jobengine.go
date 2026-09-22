@@ -391,6 +391,18 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 		lb.Writef("info", "system", format, args...)
 	}
 
+	// Reject params that would reach filesystem paths, nginx config
+	// filenames, or supervisor program names before any work starts. Path
+	// builders validate again defensively.
+	if err := validateActionParams(action, params); err != nil {
+		writeLog("[error] %v", err)
+		lb.flushNow()
+		if cerr := e.client.CompleteJob(ctx, jobID, "failed", err.Error(), action, nil); cerr != nil {
+			log.Printf("complete job %d failed: %v", jobID, cerr)
+		}
+		return
+	}
+
 	var execErr error
 
 	switch action {
@@ -586,9 +598,15 @@ func (e *JobEngine) runDeployScript(ctx context.Context, siteName string, params
 	}
 	defer e.deployLk.Release(siteName)
 
-	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	repoDir := siteDir + "/current"
-	os.MkdirAll(siteDir, 0755)
+	dir, err := siteDirPath(siteName)
+	if err != nil {
+		return err
+	}
+	repoDir, err := siteRepoPath(siteName)
+	if err != nil {
+		return err
+	}
+	os.MkdirAll(dir, 0755)
 
 	deployScript, _ := params["deploy_script"].(string)
 	repoURL, _ := params["repository"].(string)
@@ -625,14 +643,14 @@ func (e *JobEngine) runDeployScript(ctx context.Context, siteName string, params
 	writeEnvFile(siteName, params)
 
 	// Write deploy script to file
-	scriptPath := siteDir + "/.ekilie-deploy"
+	scriptPath := filepath.Join(dir, ".ekilie-deploy")
 	os.WriteFile(scriptPath, []byte(deployScript), 0755)
 
 	// Run the deploy script from repo root
 	logf("[deploy] running deploy script...")
 	workDir := repoDir
 	if _, err := os.Stat(workDir); os.IsNotExist(err) {
-		workDir = siteDir
+		workDir = dir
 	}
 	cmd := exec.CommandContext(ctx, "/bin/bash", scriptPath)
 	cmd.Dir = workDir

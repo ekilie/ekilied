@@ -6,26 +6,39 @@ import (
 	"path/filepath"
 )
 
-// resolveEnvPath returns the full path to the .env file for a site, respecting env_path.
-func resolveEnvPath(siteName string, params map[string]any) string {
-	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
-	repoDir := siteDir + "/current"
+// resolveEnvPath returns the full path to the .env file for a site. env_path
+// is resolved relative to the site's checkout directory and may not be
+// absolute or escape that directory.
+func resolveEnvPath(siteName string, params map[string]any) (string, error) {
+	repoDir, err := siteRepoPath(siteName)
+	if err != nil {
+		return "", err
+	}
 
 	envPath, _ := params["env_path"].(string)
 	if envPath == "" {
 		envPath = "."
 	}
+	if filepath.IsAbs(envPath) {
+		return "", fmt.Errorf("env_path must be relative to the repository: %q", envPath)
+	}
 
 	envDir := repoDir
-	if envPath != "." && envPath != "" {
+	if envPath != "." {
 		envDir = filepath.Join(repoDir, envPath)
 	}
-	return filepath.Join(envDir, ".env")
+	if !isContained(repoDir, envDir) {
+		return "", fmt.Errorf("env_path %q escapes the repository", envPath)
+	}
+	return filepath.Join(envDir, ".env"), nil
 }
 
 // readEnvFile reads the .env file for a site and returns its content.
 func readEnvFile(siteName string, params map[string]any) (string, error) {
-	envFilePath := resolveEnvPath(siteName, params)
+	envFilePath, err := resolveEnvPath(siteName, params)
+	if err != nil {
+		return "", err
+	}
 
 	data, err := os.ReadFile(envFilePath)
 	if err != nil {
@@ -44,7 +57,10 @@ func writeEnvContent(siteName string, params map[string]any) error {
 		return nil
 	}
 
-	envFilePath := resolveEnvPath(siteName, params)
+	envFilePath, err := resolveEnvPath(siteName, params)
+	if err != nil {
+		return err
+	}
 
 	parentDir := filepath.Dir(envFilePath)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
