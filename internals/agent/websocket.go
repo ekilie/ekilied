@@ -67,7 +67,8 @@ type WSClient struct {
 	egressLow chan []byte
 	onJob     JobHandler
 	onJobFull JobFullHandler
-	docker    *DockerService
+	docker    dockerService
+	streams   *logStreams
 }
 
 func ts() string { return time.Now().UTC().Format(time.RFC3339Nano) }
@@ -102,6 +103,7 @@ func NewWSClient(cfg *config.Config, rootCtx context.Context, onJob JobHandler, 
 		egress:    make(chan []byte, 32),
 		egressLow: make(chan []byte, 128),
 		onJob:     onJob,
+		streams:   newLogStreams(maxConcurrentLogStreams),
 	}
 	if len(onJobFull) > 0 {
 		c.onJobFull = onJobFull[0]
@@ -407,60 +409,12 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			}
 
 		case "log_stream":
-			log.Printf("[ws] [ts=%s] log_stream requested", t)
-			if c.docker == nil {
-				log.Printf("[ws] [ts=%s] docker not available for log_stream", t)
-				c.sendError("docker_not_available", "Docker is not installed on this server")
-				continue
-			}
-			var req struct {
-				Container string `json:"container"`
-				Tail      int    `json:"tail"`
-				StreamID  string `json:"stream_id"`
-			}
-			json.Unmarshal(envelope.Payload, &req)
-			if req.Tail == 0 {
-				req.Tail = 100
-			}
-
-			log.Printf("[ws] [ts=%s] starting log stream: container=%s tail=%d stream_id=%s", t, req.Container, req.Tail, req.StreamID)
-
-			logCh := make(chan string, 64)
-			var linesSent atomic.Int64
-
-			streamCtx, streamCancel := context.WithCancel(connCtx)
-			go func() {
-				for line := range logCh {
-					msg, _ := json.Marshal(wsEnvelope{
-						V: 1, Type: "log_line",
-						Payload: wsLogLinePayload{
-							StreamID:  req.StreamID,
-							Container: req.Container,
-							Stream:    "stdout",
-							Line:      line,
-							TS:        time.Now().UTC().Format(time.RFC3339),
-						},
-					})
-					select {
-					case c.egressLow <- msg:
-						linesSent.Add(1)
-					default:
-						log.Printf("[ws] [ts=%s] log_stream: egressLow full, dropping line", ts())
-					}
-				}
-			}()
-
-			err := c.docker.StreamLogs(streamCtx, req.Container, req.Tail, logCh)
-			if err != nil {
-				log.Printf("[ws] [ts=%s] log stream ended: %v (sent %d lines)", ts(), err, linesSent.Load())
-			} else {
-				log.Printf("[ws] [ts=%s] log stream completed (sent %d lines)", ts(), linesSent.Load())
-			}
-			close(logCh)
-			streamCancel()
+			// Runs the Docker follow in its own goroutine; the dispatch loop
+			// must never block on it.
+			c.startLogStream(connCtx, &pumps, envelope.Payload)
 
 		case "log_stream_stop":
-			log.Printf("[ws] [ts=%s] log_stream_stop requested", t)
+			c.stopLogStream(envelope.Payload)
 
 		default:
 			log.Printf("[ws] [ts=%s] unknown message type: %s", t, envelope.Type)
@@ -469,7 +423,9 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 	// Stop every per-connection goroutine and wait for them to exit before
 	// returning, so this connection cannot steal messages from the next one.
+	// stopAll cancels any Docker log follows that are still running.
 	connCancel()
+	c.streams.stopAll()
 	pumps.Wait()
 
 	c.connected.Store(false)
