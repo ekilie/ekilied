@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -368,13 +369,26 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 		<-e.semaphore
 	}()
 
+	// A panic in any action handler must fail this job, not the daemon: this
+	// defer runs before the semaphore release and the active/dispatched
+	// cleanup above (defers are LIFO), so the engine stays usable for other
+	// jobs. lb is nil until it is created below.
+	var lb *LogBatcher
+	defer func() {
+		if r := recover(); r != nil {
+			e.reportJobPanic(ctx, jobID, action, lb, r)
+		}
+		if lb != nil {
+			lb.Close()
+		}
+	}()
+
 	var params map[string]any
 	json.Unmarshal(rawParams, &params)
 
 	siteName, _ := params["site_name"].(string)
 
-	lb := NewLogBatcher(ctx, jobID, e.client)
-	defer lb.Close()
+	lb = NewLogBatcher(ctx, jobID, e.client)
 
 	writeLog := func(format string, args ...any) {
 		lb.Writef("info", "system", format, args...)
@@ -539,6 +553,29 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, rawP
 
 	if err := e.client.CompleteJob(ctx, jobID, status, errMsg, action, nil); err != nil {
 		log.Printf("complete job %d failed: %v", jobID, err)
+	}
+}
+
+// reportJobPanic records a recovered panic as a failed job so the control
+// plane does not have to wait for a timeout, and so the failure text reaches
+// the dashboard. It must never panic itself: it runs while the process is
+// already recovering, so any second failure is logged and swallowed.
+func (e *JobEngine) reportJobPanic(ctx context.Context, jobID uint, action string, lb *LogBatcher, r any) {
+	errMsg := fmt.Sprintf("panic: %v", r)
+	log.Printf("job %d panicked: %s\n%s", jobID, errMsg, debug.Stack())
+
+	defer func() {
+		if r2 := recover(); r2 != nil {
+			log.Printf("reporting panic for job %d failed: %v", jobID, r2)
+		}
+	}()
+
+	if lb != nil {
+		lb.Writef("error", "system", "[panic] %s", errMsg)
+		lb.flushNow()
+	}
+	if err := e.client.CompleteJob(ctx, jobID, "failed", errMsg, action, nil); err != nil {
+		log.Printf("complete panicked job %d failed: %v", jobID, err)
 	}
 }
 

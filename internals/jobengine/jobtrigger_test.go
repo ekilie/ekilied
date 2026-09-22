@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,5 +112,49 @@ func TestHandleJobTriggerAbortsOnClaimFailure(t *testing.T) {
 	}
 	if e.IsDispatched(46) {
 		t.Fatal("job 46 still marked dispatched after claim failure; poll could not retry")
+	}
+}
+
+// Regression test for ekilie/ekilied#6: a panic inside job execution must
+// fail that job instead of crashing the daemon, and must leave the engine
+// usable for the next job. The panic is injected through the first log flush,
+// which runs synchronously inside Execute.
+func TestExecuteRecoversFromPanic(t *testing.T) {
+	client := &fakeJobClient{panicStreamOnce: true}
+	e := NewJobEngine(client)
+
+	// Unknown actions finish quickly; the first StreamLogs call panics.
+	e.Execute(context.Background(), 77, "unknown_test_action", nil)
+
+	var panicked *completedCall
+	for _, c := range client.allCompletions() {
+		if c.jobID == 77 {
+			cc := c
+			panicked = &cc
+		}
+	}
+	if panicked == nil {
+		t.Fatal("panicking job was never completed")
+	}
+	if panicked.status != "failed" {
+		t.Fatalf("status = %q, want failed", panicked.status)
+	}
+	if !strings.Contains(panicked.errMsg, "panic: boom in stream logs") {
+		t.Fatalf("error = %q, want the panic text", panicked.errMsg)
+	}
+	if e.IsDispatched(77) {
+		t.Fatal("job 77 still marked dispatched after panic; poll could not retry")
+	}
+
+	// The engine must keep working: the next job runs to completion.
+	e.Execute(context.Background(), 78, "unknown_test_action", nil)
+	found := false
+	for _, c := range client.allCompletions() {
+		if c.jobID == 78 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("engine did not process a job after a recovered panic")
 	}
 }

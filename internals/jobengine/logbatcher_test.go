@@ -16,15 +16,16 @@ import (
 // builds its HTTP request with the passed context and therefore fails
 // immediately on a cancelled one.
 type fakeJobClient struct {
-	mu          sync.Mutex
-	batches     [][]dtos.LogLine
-	ctxErrs     []error
-	completions []completedCall
-	streamCh    chan struct{} // closed on every StreamLogs call, if set
-	claimJob    *dtos.JobItem
-	claimErr    error
-	claimBlock  bool // when true, ClaimJob blocks until its context is done
-	callOrder   []string
+	mu              sync.Mutex
+	batches         [][]dtos.LogLine
+	ctxErrs         []error
+	completions     []completedCall
+	streamCh        chan struct{} // closed on every StreamLogs call, if set
+	claimJob        *dtos.JobItem
+	claimErr        error
+	claimBlock      bool // when true, ClaimJob blocks until its context is done
+	panicStreamOnce bool // when true, the next StreamLogs call panics
+	callOrder       []string
 }
 
 type completedCall struct {
@@ -61,6 +62,11 @@ func (f *fakeJobClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem
 
 func (f *fakeJobClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogLine) error {
 	f.mu.Lock()
+	if f.panicStreamOnce {
+		f.panicStreamOnce = false
+		f.mu.Unlock()
+		panic("boom in stream logs")
+	}
 	defer f.mu.Unlock()
 	f.record("stream")
 	f.ctxErrs = append(f.ctxErrs, ctx.Err())
@@ -97,6 +103,12 @@ func (f *fakeJobClient) successCompletions() []completedCall {
 		}
 	}
 	return out
+}
+
+func (f *fakeJobClient) allCompletions() []completedCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]completedCall(nil), f.completions...)
 }
 
 func (f *fakeJobClient) totalLines() int {

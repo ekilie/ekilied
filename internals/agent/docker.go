@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -108,16 +109,23 @@ func containerToInfo(c types.Container) containerInfo {
 			ports = append(ports, fmt.Sprintf("%d/%s", p.PrivatePort, p.Type))
 		}
 	}
-	name := c.Names[0]
-	if len(name) > 0 && name[0] == '/' {
-		name = name[1:]
+	// Docker normally returns a name and a 64-char ID, but not always:
+	// containers in certain states, mock drivers, and podman-compat shims can
+	// return an empty Names slice or a short ID. Never index blindly here.
+	name := ""
+	if len(c.Names) > 0 {
+		name = strings.TrimPrefix(c.Names[0], "/")
+	}
+	id := c.ID
+	if len(id) > 12 {
+		id = id[:12]
 	}
 	uptime := ""
 	if c.State == "running" && c.Created > 0 {
 		uptime = time.Since(time.Unix(c.Created, 0)).Round(time.Second).String()
 	}
 	return containerInfo{
-		ID:     c.ID[:12],
+		ID:     id,
 		Name:   name,
 		Image:  c.Image,
 		State:  c.State,
