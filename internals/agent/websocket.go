@@ -203,11 +203,22 @@ func (c *WSClient) Connect(ctx context.Context) {
 
 // connectOnce dials the WebSocket URL, sets up read/egress/ping goroutines,
 // and processes incoming messages until the connection is closed.
+//
+// Every pump is scoped to a per-connection context and tracked by a
+// WaitGroup, so when this function returns no goroutine from this connection
+// is still alive. Without that, a leaked egress pump from a dead connection
+// would compete with the new connection's pump for the shared egress
+// channels and silently steal messages.
 func (c *WSClient) connectOnce(ctx context.Context) error {
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel()
+
+	var pumps sync.WaitGroup
+
 	url := c.cfg.WsURL + "?token=" + c.cfg.SessionToken
 
 	log.Printf("[ws] [ts=%s] dialing %s", ts(), url)
-	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+	conn, _, err := websocket.Dial(connCtx, url, &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"User-Agent": []string{"ekilied/1.0"},
 		},
@@ -222,13 +233,15 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 	// Read pump — receives messages from control plane
 	readCh := make(chan []byte, 64)
+	pumps.Add(1)
 	go func() {
+		defer pumps.Done()
 		defer func() {
 			log.Printf("[ws] [ts=%s] read pump exiting", ts())
 			close(readCh)
 		}()
 		for {
-			_, msg, err := conn.Read(ctx)
+			_, msg, err := conn.Read(connCtx)
 			if err != nil {
 				closeStatus := websocket.CloseStatus(err)
 				if closeStatus == -1 {
@@ -248,15 +261,17 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 	}()
 
 	// Egress pump — sends heartbeats and log messages
+	pumps.Add(1)
 	go func() {
+		defer pumps.Done()
 		defer log.Printf("[ws] [ts=%s] egress pump exiting", ts())
 		for {
 			select {
-			case <-ctx.Done():
+			case <-connCtx.Done():
 				return
 			case msg := <-c.egress:
 				log.Printf("[ws] [ts=%s] send (high) %d bytes", ts(), len(msg))
-				if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+				if err := conn.Write(connCtx, websocket.MessageText, msg); err != nil {
 					log.Printf("[ws] [ts=%s] write error (high): %v", ts(), err)
 					return
 				}
@@ -266,7 +281,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 					select {
 					case high := <-c.egress:
 						log.Printf("[ws] [ts=%s] send (high->low drain) %d bytes", ts(), len(high))
-						if err := conn.Write(ctx, websocket.MessageText, high); err != nil {
+						if err := conn.Write(connCtx, websocket.MessageText, high); err != nil {
 							log.Printf("[ws] [ts=%s] write error (drain): %v", ts(), err)
 							return
 						}
@@ -276,7 +291,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 				}
 			writeLow:
 				log.Printf("[ws] [ts=%s] send (low) %d bytes", ts(), len(msg))
-				if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+				if err := conn.Write(connCtx, websocket.MessageText, msg); err != nil {
 					log.Printf("[ws] [ts=%s] write error (low): %v", ts(), err)
 					return
 				}
@@ -285,24 +300,21 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 	}()
 
 	// Periodic ping to keep the connection alive
-	pingCtx, pingCancel := context.WithCancel(ctx)
-	defer func() {
-		log.Printf("[ws] [ts=%s] ping goroutine cancelled", ts())
-		pingCancel()
-	}()
+	pumps.Add(1)
 	go func() {
+		defer pumps.Done()
 		pingTicker := time.NewTicker(30 * time.Second)
 		defer pingTicker.Stop()
 		for {
 			select {
 			case <-pingTicker.C:
 				log.Printf("[ws] [ts=%s] sending ping", ts())
-				if err := conn.Ping(pingCtx); err != nil {
+				if err := conn.Ping(connCtx); err != nil {
 					log.Printf("[ws] [ts=%s] ping error: %v", ts(), err)
 					return
 				}
 				log.Printf("[ws] [ts=%s] ping ok (pong received)", ts())
-			case <-pingCtx.Done():
+			case <-connCtx.Done():
 				return
 			}
 		}
@@ -336,9 +348,9 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 		case "job_full":
 			var job struct {
-				JobID  uint                   `json:"job_id"`
-				Action string                 `json:"action"`
-				Params map[string]any         `json:"params"`
+				JobID  uint           `json:"job_id"`
+				Action string         `json:"action"`
+				Params map[string]any `json:"params"`
 			}
 			if err := json.Unmarshal(envelope.Payload, &job); err != nil {
 				log.Printf("[ws] [ts=%s] job_full unmarshal error: %v", t, err)
@@ -373,7 +385,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 				c.sendError("docker_not_available", "Docker is not installed on this server")
 				continue
 			}
-			containers, err := c.docker.ListContainers(ctx)
+			containers, err := c.docker.ListContainers(connCtx)
 			if err != nil {
 				log.Printf("[ws] [ts=%s] list containers error: %v", t, err)
 				c.sendError("docker_error", err.Error())
@@ -416,7 +428,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			logCh := make(chan string, 64)
 			var linesSent atomic.Int64
 
-			streamCtx, streamCancel := context.WithCancel(ctx)
+			streamCtx, streamCancel := context.WithCancel(connCtx)
 			go func() {
 				for line := range logCh {
 					msg, _ := json.Marshal(wsEnvelope{
@@ -454,6 +466,11 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			log.Printf("[ws] [ts=%s] unknown message type: %s", t, envelope.Type)
 		}
 	}
+
+	// Stop every per-connection goroutine and wait for them to exit before
+	// returning, so this connection cannot steal messages from the next one.
+	connCancel()
+	pumps.Wait()
 
 	c.connected.Store(false)
 	c.setConn(nil)
