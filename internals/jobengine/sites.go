@@ -3,19 +3,27 @@ package jobengine
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 )
 
-// createSiteDir creates the site directory.
-func createSiteDir(ctx context.Context, siteName string) error {
-	return run(ctx, "mkdir", "-p", fmt.Sprintf("/opt/ekilie/sites/%s", siteName))
+// createSiteDir creates the site directory. Native calls replace the old
+// mkdir/rm shell-outs: no extra process, no captured output.
+func createSiteDir(siteName string) error {
+	if siteName == "" {
+		return fmt.Errorf("site name is required")
+	}
+	return os.MkdirAll(filepath.Join("/opt/ekilie/sites", siteName), 0755)
 }
 
 // removeSiteDir removes the site directory and all its contents.
-func removeSiteDir(ctx context.Context, siteName string) error {
-	return run(ctx, "rm", "-rf", fmt.Sprintf("/opt/ekilie/sites/%s", siteName))
+func removeSiteDir(siteName string) error {
+	if siteName == "" {
+		return fmt.Errorf("site name is required")
+	}
+	return os.RemoveAll(filepath.Join("/opt/ekilie/sites", siteName))
 }
 
 // createSite performs full first-time site setup: creates the site and repo
@@ -23,12 +31,12 @@ func removeSiteDir(ctx context.Context, siteName string) error {
 // reverse-proxying the domain to the local app port. It does not clone the repo
 // or issue SSL — those are handled by separate deploy and ssl_issue jobs.
 // Idempotent: safe to re-run for an existing site.
-func createSite(ctx context.Context, siteName string, params map[string]any, logf func(string, ...any)) error {
+func createSite(ctx context.Context, out io.Writer, siteName string, params map[string]any, logf func(string, ...any)) error {
 	siteDir := fmt.Sprintf("/opt/ekilie/sites/%s", siteName)
 	repoDir := siteDir + "/current"
 
 	logf("[site] creating directories %s...", siteDir)
-	if err := createSiteDir(ctx, siteName); err != nil {
+	if err := createSiteDir(siteName); err != nil {
 		return fmt.Errorf("mkdir site: %w", err)
 	}
 	if err := os.MkdirAll(repoDir, 0755); err != nil {
@@ -53,7 +61,7 @@ func createSite(ctx context.Context, siteName string, params map[string]any, log
 
 	logf("[site] writing nginx vhost for %s -> 127.0.0.1:%d...", domain, port)
 	cfg := generateSiteNginxConfig(siteName, domain, port)
-	if err := writeNginxConfig(ctx, siteName, cfg); err != nil {
+	if err := writeNginxConfig(ctx, out, siteName, cfg); err != nil {
 		return fmt.Errorf("nginx: %w", err)
 	}
 

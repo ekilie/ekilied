@@ -3,18 +3,19 @@ package jobengine
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 )
 
 // installNginx installs nginx via apt.
-func installNginx(ctx context.Context) error {
-	return run(ctx, "apt-get", "install", "-y", "nginx")
+func installNginx(ctx context.Context, out io.Writer) error {
+	return run(ctx, out, "apt-get", "install", "-y", "nginx")
 }
 
 // writeNginxConfig writes an nginx site config, validates it, creates a symlink
 // in sites-enabled, enables nginx, and reloads.
-func writeNginxConfig(ctx context.Context, siteName, nginxConfig string) error {
+func writeNginxConfig(ctx context.Context, out io.Writer, siteName, nginxConfig string) error {
 	path := fmt.Sprintf("/etc/nginx/sites-available/%s", siteName)
 	if err := writeFile(path, nginxConfig); err != nil {
 		return err
@@ -29,7 +30,7 @@ func writeNginxConfig(ctx context.Context, siteName, nginxConfig string) error {
 		return fmt.Errorf("nginx validation failed: %s", string(out))
 	}
 	exec.CommandContext(ctx, "systemctl", "enable", "nginx").Run()
-	return run(ctx, "systemctl", "reload-or-restart", "nginx")
+	return run(ctx, out, "systemctl", "reload-or-restart", "nginx")
 }
 
 // readNginxConfig reads the nginx site config from disk and returns its content.
@@ -43,13 +44,13 @@ func readNginxConfig(siteName string) (string, error) {
 }
 
 // issueSSL issues an SSL certificate via certbot (nginx mode).
-func issueSSL(ctx context.Context, domain, email string) error {
+func issueSSL(ctx context.Context, out io.Writer, domain, email string) error {
 	args := []string{"--nginx", "--non-interactive", "--agree-tos", "--redirect"}
 	if email != "" {
 		args = append(args, "--email", email)
 	}
 	args = append(args, "-d", domain)
-	return run(ctx, "certbot", args...)
+	return run(ctx, out, "certbot", args...)
 }
 
 // generateSiteNginxConfig builds an HTTP-only nginx vhost that reverse-proxies

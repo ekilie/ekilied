@@ -3,20 +3,81 @@ package jobengine
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
-// run executes a command with a context (for cancellation) and a 10-minute timeout.
-func run(ctx context.Context, name string, args ...string) error {
+const (
+	// maxErrorTailBytes is how much trailing command output is kept for the
+	// error message when a command fails. Full output is streamed to the job
+	// log; only this tail is stored on the control plane.
+	maxErrorTailBytes = 8 * 1024
+	// maxJobErrorBytes caps the error string reported for any job, including
+	// errors that do not come from run().
+	maxJobErrorBytes = 4 * 1024
+)
+
+// tailWriter streams everything it receives to out (when out is non-nil) and
+// keeps only the last max bytes, so a failing command can report a bounded
+// tail instead of its entire output.
+type tailWriter struct {
+	out io.Writer
+	max int
+	buf []byte
+}
+
+func newTailWriter(out io.Writer, max int) *tailWriter {
+	return &tailWriter{out: out, max: max}
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	if w.out != nil {
+		// A log sink failure must not fail the command; the command's output
+		// is still bounded below.
+		_, _ = w.out.Write(p)
+	}
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.max {
+		w.buf = w.buf[len(w.buf)-w.max:]
+	}
+	return len(p), nil
+}
+
+// Tail returns the last bytes seen, trimmed for error messages.
+func (w *tailWriter) Tail() string {
+	return strings.TrimSpace(string(w.buf))
+}
+
+// run executes a command with a context (for cancellation) and a 10-minute
+// timeout, streaming stdout and stderr to out (which may be nil, for example
+// when there is no job log). On failure the returned error carries only the
+// last maxErrorTailBytes of output, never the full output.
+func run(ctx context.Context, out io.Writer, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %s", name, string(out))
+	tail := newTailWriter(out, maxErrorTailBytes)
+	cmd.Stdout = tail
+	cmd.Stderr = tail
+	if err := cmd.Run(); err != nil {
+		if tailStr := tail.Tail(); tailStr != "" {
+			return fmt.Errorf("%s failed: %w (output tail: %s)", name, err, tailStr)
+		}
+		return fmt.Errorf("%s failed: %w", name, err)
 	}
 	return nil
+}
+
+// truncateError bounds an error string that will be stored on the control
+// plane, keeping the start of the message.
+func truncateError(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 // writeFile writes content to a file with 0644 permissions.

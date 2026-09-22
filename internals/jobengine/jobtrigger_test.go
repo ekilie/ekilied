@@ -209,3 +209,24 @@ func TestHandleJobTriggerDoesNotMarshalParams(t *testing.T) {
 		t.Fatalf("params were marshaled on dispatch: %q", comps[0].errMsg)
 	}
 }
+
+// The error string reported to the control plane must stay bounded even when
+// an error is not produced by run() (which already bounds its own tail).
+func TestExecuteBoundsReportedError(t *testing.T) {
+	client := &fakeJobClient{}
+	e := NewJobEngine(client)
+
+	longAction := strings.Repeat("x", 10000)
+	e.Execute(context.Background(), 92, longAction, nil)
+
+	comps := client.allCompletions()
+	if len(comps) != 1 {
+		t.Fatalf("completions = %d, want 1", len(comps))
+	}
+	if !strings.Contains(comps[0].errMsg, "unknown action") {
+		t.Fatalf("error = %q, want the unknown action text", comps[0].errMsg)
+	}
+	if len(comps[0].errMsg) > maxJobErrorBytes+len("...(truncated)") {
+		t.Fatalf("reported error length = %d, want bounded to %d", len(comps[0].errMsg), maxJobErrorBytes)
+	}
+}
