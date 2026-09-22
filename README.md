@@ -272,6 +272,10 @@ apps/ekilied/
 
 `internals/recipes` and `internals/utils` are legacy scaffolding with no callers and are slated for removal.
 
+## Documentation
+
+- [Codebase walkthrough](./docs/walkthrough.md): how ekilied works, layer by layer, with diagrams, a goroutine map, the full job lifecycle, and a suggested reading order.
+
 ## License
 
 AGPL-3.0. See [LICENSE](./LICENSE).
