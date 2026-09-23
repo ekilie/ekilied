@@ -1,10 +1,6 @@
 package models
 
-import (
-	"time"
-
-	"gorm.io/gorm"
-)
+import "gorm.io/gorm"
 
 type Identity struct {
 	gorm.Model
@@ -29,62 +25,18 @@ type Capability struct {
 	LastChecked int64
 }
 
-type PendingJob struct {
-	gorm.Model
-	JobID        uint   `gorm:"uniqueIndex;not null"`
-	Action       string `gorm:"not null"`
-	Status       string `gorm:"not null"`
-	Params       string `gorm:"type:text"`
-	Retries      int    `gorm:"default:0"`
-	MaxRetries   int    `gorm:"default:3"`
-	LastError    string `gorm:"type:text"`
-	StartedAt    int64
-	CompletedAt  int64
-	DeployLockID string `gorm:"index"`
-}
-
-type CompletedJob struct {
-	gorm.Model
-	JobID       uint   `gorm:"uniqueIndex;not null"`
-	Action      string `gorm:"not null"`
-	Status      string `gorm:"not null"`
-	Params      string `gorm:"type:text"`
-	Summary     string `gorm:"type:text"`
-	Retries     int
-	StartedAt   int64
-	CompletedAt int64
-}
-
-type SiteCache struct {
-	gorm.Model
-	SiteName      string `gorm:"uniqueIndex;not null"`
-	SiteType      string `gorm:"not null"`
-	Domains       string `gorm:"type:text"`
-	WebDirectory  string `gorm:"default:/"`
-	NginxConfig   string `gorm:"type:text"`
-	DeployScript  string `gorm:"type:text"`
-	ActiveRelease string
-	LastDeployAt  int64
-	EnvHash       string
-}
-
-type Setting struct {
-	gorm.Model
-	Key   string `gorm:"uniqueIndex;not null"`
-	Value string `gorm:"type:text;not null"`
-}
-
-// AllModels returns all models for AutoMigrate.
+// AllModels returns the models AutoMigrate manages. Only models with readers
+// or writers belong here: the agent keeps in-flight jobs in memory
+// (JobEngine.active and .dispatched), so job, site, and setting tables would
+// be migrated on every boot for nothing.
+//
+// The four tables removed in this change (pending_jobs, completed_jobs,
+// site_caches, settings) are left untouched in existing local databases.
+// They are empty, unused, and harmless. A downgrade to an older binary would
+// simply recreate them through AutoMigrate.
 func AllModels() []any {
 	return []any{
 		&Identity{},
 		&Capability{},
-		&PendingJob{},
-		&CompletedJob{},
-		&SiteCache{},
-		&Setting{},
 	}
 }
-
-// Ensure time import is used (referenced by gorm.Model)
-var _ = time.Time{}

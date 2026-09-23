@@ -590,30 +590,6 @@ func (c *WSClient) ClaimJob(ctx context.Context, jobID uint) (*dtos.JobItem, err
 	return apiResp.Data, nil
 }
 
-// AcceptJob marks a job as accepted via POST /agents/jobs/:id/accept.
-// Deprecated: Use ClaimJob instead, which atomically claims and fetches job details.
-func (c *WSClient) AcceptJob(ctx context.Context, jobID uint) error {
-	t := ts()
-	log.Printf("[http] [ts=%s] accepting job %d", t, jobID)
-	req, _ := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("%s/agents/jobs/%d/accept", c.cfg.APIURL, jobID), nil)
-	req.Header.Set("Authorization", "Bearer "+c.cfg.SessionToken)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		log.Printf("[http] [ts=%s] accept job %d error: %v", t, jobID, err)
-		return err
-	}
-	resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		log.Printf("[http] [ts=%s] accept job %d: HTTP %d", t, jobID, resp.StatusCode)
-		return fmt.Errorf("accept HTTP %d", resp.StatusCode)
-	}
-	log.Printf("[http] [ts=%s] accepted job %d", t, jobID)
-	return nil
-}
-
 // StreamLogs sends a batch of log lines for a job via POST /agents/jobs/:id/logs.
 func (c *WSClient) StreamLogs(ctx context.Context, jobID uint, lines []dtos.LogLine) error {
 	t := ts()

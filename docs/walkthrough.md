@@ -51,12 +51,6 @@ Two properties define the whole design:
    claims a job before running it, streams logs while it runs, and reports the final
    status. If the agent restarts, the control plane redelivers.
 
-### What to ignore on a first pass
-
-- `internals/recipes` and `internals/utils` are unused scaffolding slated for removal.
-- `WSClient.AcceptJob` is deprecated; the claim endpoint replaced it.
-- `models.PendingJob`, `CompletedJob`, `SiteCache`, `Setting` are migrated but unused.
-
 ---
 
 ## 2. The three layers
@@ -162,11 +156,14 @@ flag was set, and the effective value plus its source (`default`, `config file`,
 
 File: `internals/models/models.go`, `pkg/database/sqlite.go`.
 
-| Model | Used? | Purpose |
-|---|---|---|
-| `Identity` | yes | Last agent id, session, URLs, connection flag |
-| `Capability` | yes | Tool availability snapshot |
-| `PendingJob`, `CompletedJob`, `SiteCache`, `Setting` | no | Legacy tables |
+| Model | Purpose |
+|---|---|
+| `Identity` | Last agent id, session, URLs, connection flag |
+| `Capability` | Tool availability snapshot |
+
+Only these two models are migrated. Job state lives in memory (`active` and
+`dispatched` maps), and the old job, site, and setting tables were removed from
+`AllModels`; they are empty leftovers in existing local databases.
 
 The database is pure-Go SQLite (`glebarez/sqlite`) with a single connection. It is a
 convenience cache, not the source of truth: losing it only costs one re-registration
