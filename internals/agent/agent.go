@@ -69,6 +69,23 @@ func (e *Ekilied) capabilityDTOs() []dtos.Capability {
 	}
 }
 
+// saveIdentity atomically replaces the stored identity with ident. The
+// delete and insert run in one transaction, so a crash or write error can
+// never leave the agent with no usable identity row.
+func saveIdentity(db *gorm.DB, ident *models.Identity) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("1 = 1").Delete(&models.Identity{}).Error; err != nil {
+			return fmt.Errorf("clear identity: %w", err)
+		}
+		if err := tx.Create(ident).Error; err != nil {
+			return fmt.Errorf("create identity: %w", err)
+		}
+		return nil
+	})
+}
+
+// RegisterAndSave performs the one-time registration handshake and persists
+// the resulting identity. It is safe to call before Start.
 func (e *Ekilied) RegisterAndSave() error {
 	sessionToken, agentID, err := e.ws.Register(e.ctx, e.capabilityDTOs())
 	if err != nil {
@@ -77,8 +94,7 @@ func (e *Ekilied) RegisterAndSave() error {
 	e.cfg.SessionToken = sessionToken
 	e.cfg.AgentID = agentID
 
-	e.db.Where("1 = 1").Delete(&models.Identity{})
-	e.db.Create(&models.Identity{
+	ident := &models.Identity{
 		AgentID:      agentID,
 		ServerID:     e.cfg.ServerID,
 		SessionToken: sessionToken,
@@ -87,7 +103,10 @@ func (e *Ekilied) RegisterAndSave() error {
 		PollInterval: e.cfg.PollInterval,
 		Connected:    true,
 		Version:      config.Version,
-	})
+	}
+	if err := saveIdentity(e.db, ident); err != nil {
+		return fmt.Errorf("persist identity: %w", err)
+	}
 	log.Printf("identity persisted: agent_id=%s", agentID)
 	return nil
 }

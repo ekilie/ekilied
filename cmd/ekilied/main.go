@@ -217,18 +217,19 @@ func main() {
 		}
 	}
 
+	// One agent instance for the whole boot. Building a throwaway agent to
+	// register and then a second one to run doubled the capability scan and
+	// the HTTP/WS clients, and left a crash window around the identity write.
+	e, err := agent.New(cfg, database.GetDB())
+	if err != nil {
+		log.Fatalf("failed to initialize: %v", err)
+	}
+
 	if cfg.NeedsRegistration() {
 		log.Println("performing one-time registration handshake...")
-		tmp, err := agent.New(cfg, database.GetDB())
-		if err != nil {
-			log.Fatalf("failed to initialize: %v", err)
-		}
-		if err := tmp.RegisterAndSave(); err != nil {
+		if err := e.RegisterAndSave(); err != nil {
 			log.Fatalf("registration failed: %v", err)
 		}
-		// Update cfg with the session token from registration
-		cfg.SessionToken = tmp.Config().SessionToken
-		cfg.AgentID = tmp.Config().AgentID
 		log.Printf("registration complete: agent_id=%s", cfg.AgentID)
 		// Persist the session so the agent reconnects after a restart.
 		// A failure here is fatal: continuing would strand the agent on
@@ -236,12 +237,6 @@ func main() {
 		if err := config.SaveSession(f.ConfigPath, cfg.AgentID, cfg.SessionToken); err != nil {
 			log.Fatalf("failed to persist session to %s: %v", f.ConfigPath, err)
 		}
-		tmp.Stop()
-	}
-
-	e, err := agent.New(cfg, database.GetDB())
-	if err != nil {
-		log.Fatalf("failed to initialize: %v", err)
 	}
 
 	if err := e.Start(); err != nil {

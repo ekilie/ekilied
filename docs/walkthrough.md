@@ -112,14 +112,13 @@ main()
  ├─ !cfg.HasSession()?
  │     └─ restoreSessionFromDB()        heal agents whose session was never saved
  │
- ├─ cfg.NeedsRegistration()?
- │     ├─ agent.New(cfg, db)
- │     ├─ RegisterAndSave()             POST /agents/register
- │     ├─ config.SaveSession()          atomic 0600 write back to agent.yml
- │     └─ tmp.Stop()
+ ├─ e := agent.New(cfg, db)             one agent for the whole boot
  │
- ├─ e := agent.New(cfg, db)             WSClient + JobEngine wiring
- ├─ e.Start()                           spawns all long-lived loops
+ ├─ cfg.NeedsRegistration()?
+ │     ├─ e.RegisterAndSave()           POST /agents/register + atomic identity write
+ │     └─ config.SaveSession()          atomic 0600 write back to agent.yml
+ │
+ ├─ e.Start()                           capability scan + all long-lived loops
  │
  └─ <-SIGINT/SIGTERM ──► e.Stop()       cancel, close docker, wait, mark offline
 ```
@@ -167,6 +166,11 @@ File: `internals/models/models.go`, `pkg/database/sqlite.go`.
 The database is pure-Go SQLite (`glebarez/sqlite`) with a single connection. It is a
 convenience cache, not the source of truth: losing it only costs one re-registration
 at worst (and the session restore exists to avoid even that).
+
+The identity row is replaced inside a single transaction (`saveIdentity` in
+`internals/agent/agent.go`), so a crash or write error between the delete and the
+insert cannot leave the agent with no identity. `RegisterAndSave` is safe to call
+before `Start`, and `main` builds exactly one agent per boot.
 
 ---
 
