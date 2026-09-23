@@ -136,3 +136,70 @@ func TestSaveSessionValidation(t *testing.T) {
 		t.Error("want error for empty session token")
 	}
 }
+
+// Regression test for ekilie/ekilied#29: auto_update from the config file must
+// be honored unless a flag or environment variable explicitly overrides it,
+// and the effective source must be reported.
+func TestAutoUpdatePrecedence(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		path := writeFixture(t, "api_url: https://engine.example.com\n")
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.AutoUpdate {
+			t.Fatal("default AutoUpdate = false, want true")
+		}
+		if cfg.AutoUpdateSource != "default" {
+			t.Fatalf("source = %q, want default", cfg.AutoUpdateSource)
+		}
+	})
+
+	t.Run("file false is honored", func(t *testing.T) {
+		path := writeFixture(t, "api_url: https://engine.example.com\nauto_update: false\n")
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.AutoUpdate {
+			t.Fatal("file auto_update: false was ignored")
+		}
+		if cfg.AutoUpdateSource != "config file" {
+			t.Fatalf("source = %q, want config file", cfg.AutoUpdateSource)
+		}
+	})
+
+	t.Run("flag beats file in both directions", func(t *testing.T) {
+		path := writeFixture(t, "api_url: https://engine.example.com\nauto_update: false\n")
+		yes := true
+		cfg, err := Load(path, WithFlags(FlagOverrides{AutoUpdate: &yes}))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.AutoUpdate || cfg.AutoUpdateSource != "flag" {
+			t.Fatalf("flag true: AutoUpdate=%v source=%q, want true/flag", cfg.AutoUpdate, cfg.AutoUpdateSource)
+		}
+
+		path = writeFixture(t, "api_url: https://engine.example.com\nauto_update: true\n")
+		no := false
+		cfg, err = Load(path, WithFlags(FlagOverrides{AutoUpdate: &no}))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.AutoUpdate || cfg.AutoUpdateSource != "flag" {
+			t.Fatalf("flag false: AutoUpdate=%v source=%q, want false/flag", cfg.AutoUpdate, cfg.AutoUpdateSource)
+		}
+	})
+
+	t.Run("environment beats file", func(t *testing.T) {
+		t.Setenv("EKILIED_AUTO_UPDATE", "true")
+		path := writeFixture(t, "api_url: https://engine.example.com\nauto_update: false\n")
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.AutoUpdate || cfg.AutoUpdateSource != "environment" {
+			t.Fatalf("env true: AutoUpdate=%v source=%q, want true/environment", cfg.AutoUpdate, cfg.AutoUpdateSource)
+		}
+	})
+}

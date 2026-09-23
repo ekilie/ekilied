@@ -71,6 +71,7 @@ func WithFlags(overrides FlagOverrides) ConfigOption {
 		}
 		if overrides.AutoUpdate != nil {
 			cfg.AutoUpdate = *overrides.AutoUpdate
+			cfg.AutoUpdateSource = "flag"
 		}
 		if overrides.UpdateInterval > 0 {
 			cfg.UpdateCheckInterval = overrides.UpdateInterval
@@ -103,6 +104,11 @@ type Config struct {
 	// Auto-update
 	AutoUpdate          bool `yaml:"auto_update"`
 	UpdateCheckInterval int  `yaml:"update_check_interval"`
+
+	// AutoUpdateSource records where AutoUpdate came from: "default",
+	// "config file", "flag", or "environment". It is informational (logged at
+	// startup) and never written to the config file.
+	AutoUpdateSource string `yaml:"-"`
 }
 
 func Defaults() *Config {
@@ -144,6 +150,9 @@ func (c *Config) SetDefaults() {
 	}
 	if c.UpdateCheckInterval == 0 {
 		c.UpdateCheckInterval = d.UpdateCheckInterval
+	}
+	if c.AutoUpdateSource == "" {
+		c.AutoUpdateSource = "default"
 	}
 }
 
@@ -342,6 +351,7 @@ func parseYAML(data string, cfg *Config) error {
 			cfg.HeartbeatInterval, _ = strconv.Atoi(val)
 		case "auto_update":
 			cfg.AutoUpdate = val == "true" || val == "1" || val == "yes"
+			cfg.AutoUpdateSource = "config file"
 		case "update_check_interval":
 			cfg.UpdateCheckInterval, _ = strconv.Atoi(val)
 		}
@@ -398,6 +408,7 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("EKILIED_AUTO_UPDATE"); v != "" {
 		cfg.AutoUpdate = v == "true" || v == "1" || v == "yes"
+		cfg.AutoUpdateSource = "environment"
 	}
 	if v := os.Getenv("EKILIED_UPDATE_INTERVAL"); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {

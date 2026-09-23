@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/ekilie/ekilied/internals/agent"
@@ -27,12 +28,53 @@ type Flags struct {
 	LogLevel          string
 	PollInterval      int
 	HeartbeatInterval int
-	AutoUpdate        bool
+	AutoUpdate        optionalBool
 	UpdateInterval    int
 	Setup             bool
 	UpdateFlag        bool
 	VersionFlag       bool
 	HelpFlag          bool
+}
+
+// optionalBool is a tri-state boolean flag: it remembers whether the flag was
+// explicitly provided. Layered config must only override a file value when the
+// operator asked for it, and flag.BoolVar cannot express "not set" because it
+// always yields its default. Use flag.Var with this type for any future
+// boolean that can also come from agent.yml or the environment.
+type optionalBool struct {
+	set   bool
+	value bool
+}
+
+func (b *optionalBool) String() string {
+	if !b.set {
+		return ""
+	}
+	return strconv.FormatBool(b.value)
+}
+
+func (b *optionalBool) Set(v string) error {
+	parsed, err := strconv.ParseBool(v)
+	if err != nil {
+		return fmt.Errorf("invalid boolean %q", v)
+	}
+	b.set = true
+	b.value = parsed
+	return nil
+}
+
+// IsBoolFlag lets `--auto-update` work without an explicit value, while
+// `--auto-update=false` still parses.
+func (b *optionalBool) IsBoolFlag() bool { return true }
+
+// autoUpdateOverride returns the value to pass into config.Load, or nil when
+// the flag was not explicitly set so the config file and environment decide.
+func autoUpdateOverride(f Flags) *bool {
+	if !f.AutoUpdate.set {
+		return nil
+	}
+	v := f.AutoUpdate.value
+	return &v
 }
 
 func parseFlags() Flags {
@@ -59,7 +101,7 @@ func parseFlags() Flags {
 	flag.IntVar(&f.PollInterval, "poll-interval", 0, "job poll interval in seconds (default: 5)")
 	flag.IntVar(&f.HeartbeatInterval, "heartbeat-interval", 0, "heartbeat interval in seconds (default: 30)")
 
-	flag.BoolVar(&f.AutoUpdate, "auto-update", true, "enable automatic self-update")
+	flag.Var(&f.AutoUpdate, "auto-update", "enable automatic self-update (overrides auto_update from the config file only when passed)")
 	flag.IntVar(&f.UpdateInterval, "update-interval", 86400, "update check interval in seconds (default: 86400 = 24h)")
 
 	flag.BoolVar(&f.Setup, "setup", false, "run setup mode: register with token and write config")
@@ -131,7 +173,6 @@ func main() {
 
 	log.Printf("ekilied %s (%s) starting", config.Version, config.Commit)
 
-	autoUpdate := f.AutoUpdate
 	cfg, err := config.Load(f.ConfigPath, config.WithFlags(config.FlagOverrides{
 		APIURL:            f.APIURL,
 		WsURL:             f.WsURL,
@@ -142,12 +183,18 @@ func main() {
 		LogLevel:          f.LogLevel,
 		PollInterval:      f.PollInterval,
 		HeartbeatInterval: f.HeartbeatInterval,
-		AutoUpdate:        &autoUpdate,
+		AutoUpdate:        autoUpdateOverride(f),
 		UpdateInterval:    f.UpdateInterval,
 	}))
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+
+	autoUpdateState := "disabled"
+	if cfg.AutoUpdate {
+		autoUpdateState = "enabled"
+	}
+	log.Printf("auto-update %s (source: %s)", autoUpdateState, cfg.AutoUpdateSource)
 
 	dbCfg := database.DefaultConfig(cfg.DBPath)
 	if err := database.Connect(dbCfg); err != nil {

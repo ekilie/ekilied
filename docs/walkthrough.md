@@ -146,6 +146,12 @@ persisted, because the registration token is single use on the control plane. If
 agent restarts without a session, it can never register again. That is why startup
 has both a write-back (`SaveSession`) and a restore path (`restoreSessionFromDB`).
 
+Boolean flags are tri-state. `--auto-update` only overrides the file when it is
+explicitly passed (`--auto-update` or `--auto-update=false`), so `auto_update: false`
+in `agent.yml` is honored. `optionalBool` in `cmd/ekilied/main.go` records whether the
+flag was set, and the effective value plus its source (`default`, `config file`,
+`flag`, `environment`) is logged at startup.
+
 ### 3.2 Local state
 
 File: `internals/models/models.go`, `pkg/database/sqlite.go`.
