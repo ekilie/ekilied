@@ -166,7 +166,7 @@ func main() {
 		if err := jobengine.SelfUpdate(repo, release); err != nil {
 			log.Fatalf("[update] failed: %v", err)
 		}
-		log.Printf("[update] updated to %s — restart the agent to apply", release.TagName)
+		log.Printf("[update] updated to %s: restart the agent to apply", release.TagName)
 		fmt.Printf("Updated to %s. Restart the agent: systemctl restart ekilied\n", release.TagName)
 		os.Exit(0)
 	}
@@ -321,19 +321,23 @@ func runSetup(f Flags) error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	yml := fmt.Sprintf(`server_id: %d
-agent_id: %s
-session_token: %s
-api_url: %s
-ws_url: %s
-poll_interval: %d
-`, cfg.ServerID, agentID, sessionToken, cfg.APIURL, cfg.WsURL, cfg.PollInterval)
+	yml, err := config.MarshalSetup(config.SetupConfig{
+		ServerID:     cfg.ServerID,
+		AgentID:      agentID,
+		SessionToken: sessionToken,
+		APIURL:       cfg.APIURL,
+		WsURL:        cfg.WsURL,
+		PollInterval: cfg.PollInterval,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
 
-	if err := os.WriteFile(f.ConfigPath, []byte(yml), 0600); err != nil {
+	if err := os.WriteFile(f.ConfigPath, yml, 0600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
-	fmt.Printf("setup complete — config written to %s\n", f.ConfigPath)
+	fmt.Printf("setup complete: config written to %s\n", f.ConfigPath)
 	fmt.Printf("  agent_id:     %s\n", agentID)
 	fmt.Printf("  api_url:      %s\n", cfg.APIURL)
 	fmt.Printf("  ws_url:       %s\n", cfg.WsURL)

@@ -31,7 +31,7 @@ func removeSiteDir(siteName string) error {
 // createSite performs full first-time site setup: creates the site and repo
 // directories, writes the initial .env, and installs an HTTP-only nginx vhost
 // reverse-proxying the domain to the local app port. It does not clone the repo
-// or issue SSL — those are handled by separate deploy and ssl_issue jobs.
+// or issue SSL; those are handled by separate deploy and ssl_issue jobs.
 // Idempotent: safe to re-run for an existing site.
 func createSite(ctx context.Context, out io.Writer, siteName string, params map[string]any, logf func(string, ...any)) error {
 	dir, err := siteDirPath(siteName)

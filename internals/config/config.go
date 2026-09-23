@@ -1,13 +1,17 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
+	"gopkg.in/yaml.v3"
 )
 
 // Version and Commit are set at build time via -ldflags.
@@ -93,13 +97,13 @@ type Config struct {
 	HeartbeatInterval int    `yaml:"heartbeat_interval"`
 
 	// Storage
-	DBPath     string
-	DataDir    string
-	LogDir     string
-	SocketPath string
+	DBPath     string `yaml:"db_path"`
+	DataDir    string `yaml:"data_dir"`
+	LogDir     string `yaml:"log_dir"`
+	SocketPath string `yaml:"socket_path"`
 
 	// Runtime
-	LogLevel string
+	LogLevel string `yaml:"log_level"`
 
 	// Auto-update
 	AutoUpdate          bool `yaml:"auto_update"`
@@ -157,7 +161,7 @@ func (c *Config) SetDefaults() {
 }
 
 // Load reads config from a YAML file, then applies env vars and options.
-// The config file is optional — all settings can come from flags or env vars.
+// The config file is optional: all settings can come from flags or env vars.
 func Load(path string, opts ...ConfigOption) (*Config, error) {
 	_ = godotenv.Load()
 
@@ -194,7 +198,7 @@ func Load(path string, opts ...ConfigOption) (*Config, error) {
 
 	// 6. Validate
 	if cfg.APIURL == "" && !cfg.HasSession() {
-		return nil, fmt.Errorf("api_url is required — set --api-url, EKILIED_API_URL, or add api_url to agent.yml")
+		return nil, fmt.Errorf("api_url is required: set --api-url, EKILIED_API_URL, or add api_url to agent.yml")
 	}
 
 	return cfg, nil
@@ -315,48 +319,136 @@ func yamlScalar(s string) string {
 	return s
 }
 
-// ── YAML parser (no dependency) ──────────────────────────────────────────
+// ── YAML parser (gopkg.in/yaml.v3) ───────────────────────────────────────
 
+// yamlConfig mirrors the agent.yml keys with pointers so a missing key can be
+// told apart from a key set to a zero value. Unknown keys are rejected by the
+// decoder, and type errors and unknown fields are reported with line numbers.
+type yamlConfig struct {
+	ServerID          *uint   `yaml:"server_id"`
+	AgentID           *string `yaml:"agent_id"`
+	SessionToken      *string `yaml:"session_token"`
+	RegistrationToken *string `yaml:"registration_token"`
+
+	APIURL            *string `yaml:"api_url"`
+	WsURL             *string `yaml:"ws_url"`
+	PollInterval      *int    `yaml:"poll_interval"`
+	HeartbeatInterval *int    `yaml:"heartbeat_interval"`
+
+	DBPath     *string `yaml:"db_path"`
+	DataDir    *string `yaml:"data_dir"`
+	LogDir     *string `yaml:"log_dir"`
+	SocketPath *string `yaml:"socket_path"`
+	LogLevel   *string `yaml:"log_level"`
+
+	AutoUpdate          *bool `yaml:"auto_update"`
+	UpdateCheckInterval *int  `yaml:"update_check_interval"`
+}
+
+// parseYAML decodes agent.yml on top of the defaults already present in cfg.
+// Values with inline comments, quoting, or colons parse the way YAML says they
+// should, and a malformed file fails instead of silently defaulting.
 func parseYAML(data string, cfg *Config) error {
-	for _, line := range strings.Split(data, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		val := strings.TrimSpace(parts[1])
-		val = strings.Trim(val, `"' `)
+	dec := yaml.NewDecoder(strings.NewReader(data))
+	dec.KnownFields(true)
 
-		switch key {
-		case "server_id":
-			id, _ := strconv.ParseUint(val, 10, 64)
-			cfg.ServerID = uint(id)
-		case "agent_id":
-			cfg.AgentID = val
-		case "session_token":
-			cfg.SessionToken = val
-		case "registration_token":
-			cfg.RegistrationToken = val
-		case "api_url":
-			cfg.APIURL = val
-		case "ws_url":
-			cfg.WsURL = val
-		case "poll_interval":
-			cfg.PollInterval, _ = strconv.Atoi(val)
-		case "heartbeat_interval":
-			cfg.HeartbeatInterval, _ = strconv.Atoi(val)
-		case "auto_update":
-			cfg.AutoUpdate = val == "true" || val == "1" || val == "yes"
-			cfg.AutoUpdateSource = "config file"
-		case "update_check_interval":
-			cfg.UpdateCheckInterval, _ = strconv.Atoi(val)
+	var yc yamlConfig
+	if err := dec.Decode(&yc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil // empty file, keep defaults
 		}
+		return decorateYAMLError(err, data)
 	}
+	applyYAML(cfg, yc)
 	return nil
+}
+
+// yamlLineRe extracts the line number yaml.v3 puts in its error messages.
+var yamlLineRe = regexp.MustCompile(`line (\d+):`)
+
+// decorateYAMLError appends the offending source line to a yaml.v3 error.
+// The library reports line numbers but not the key text, and an operator
+// fixing a typo needs to see which line is wrong.
+func decorateYAMLError(err error, data string) error {
+	m := yamlLineRe.FindStringSubmatch(err.Error())
+	if len(m) != 2 {
+		return err
+	}
+	n, convErr := strconv.Atoi(m[1])
+	if convErr != nil {
+		return err
+	}
+	lines := strings.Split(data, "\n")
+	if n < 1 || n > len(lines) {
+		return err
+	}
+	return fmt.Errorf("%w (offending line: %q)", err, strings.TrimSpace(lines[n-1]))
+}
+
+func applyYAML(cfg *Config, yc yamlConfig) {
+	if yc.ServerID != nil {
+		cfg.ServerID = *yc.ServerID
+	}
+	if yc.AgentID != nil {
+		cfg.AgentID = *yc.AgentID
+	}
+	if yc.SessionToken != nil {
+		cfg.SessionToken = *yc.SessionToken
+	}
+	if yc.RegistrationToken != nil {
+		cfg.RegistrationToken = *yc.RegistrationToken
+	}
+	if yc.APIURL != nil {
+		cfg.APIURL = *yc.APIURL
+	}
+	if yc.WsURL != nil {
+		cfg.WsURL = *yc.WsURL
+	}
+	if yc.PollInterval != nil {
+		cfg.PollInterval = *yc.PollInterval
+	}
+	if yc.HeartbeatInterval != nil {
+		cfg.HeartbeatInterval = *yc.HeartbeatInterval
+	}
+	if yc.DBPath != nil {
+		cfg.DBPath = *yc.DBPath
+	}
+	if yc.DataDir != nil {
+		cfg.DataDir = *yc.DataDir
+	}
+	if yc.LogDir != nil {
+		cfg.LogDir = *yc.LogDir
+	}
+	if yc.SocketPath != nil {
+		cfg.SocketPath = *yc.SocketPath
+	}
+	if yc.LogLevel != nil {
+		cfg.LogLevel = *yc.LogLevel
+	}
+	if yc.AutoUpdate != nil {
+		cfg.AutoUpdate = *yc.AutoUpdate
+		cfg.AutoUpdateSource = "config file"
+	}
+	if yc.UpdateCheckInterval != nil {
+		cfg.UpdateCheckInterval = *yc.UpdateCheckInterval
+	}
+}
+
+// SetupConfig is the minimal configuration written by `ekilied --setup`. It
+// marshals with yaml.v3, so tokens and URLs containing special characters are
+// quoted correctly instead of producing an unparseable file.
+type SetupConfig struct {
+	ServerID     uint   `yaml:"server_id"`
+	AgentID      string `yaml:"agent_id"`
+	SessionToken string `yaml:"session_token"`
+	APIURL       string `yaml:"api_url"`
+	WsURL        string `yaml:"ws_url"`
+	PollInterval int    `yaml:"poll_interval"`
+}
+
+// MarshalSetup renders the setup configuration as YAML.
+func MarshalSetup(cfg SetupConfig) ([]byte, error) {
+	return yaml.Marshal(cfg)
 }
 
 // ── Environment variable overrides ───────────────────────────────────────

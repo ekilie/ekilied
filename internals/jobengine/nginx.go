@@ -75,7 +75,7 @@ func issueSSL(ctx context.Context, out io.Writer, domain, email string) error {
 
 // generateSiteNginxConfig builds an HTTP-only nginx vhost that reverse-proxies
 // the site's domain to the local app port. SSL is intentionally not configured
-// here — a separate ssl_issue job obtains the certificate later, and the
+// here; a separate ssl_issue job obtains the certificate later, and the
 // acme-challenge location is left as a passthrough so that job can answer the
 // HTTP-01 challenge.
 func generateSiteNginxConfig(siteName, domain string, port int) string {

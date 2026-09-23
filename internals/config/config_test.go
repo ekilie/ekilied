@@ -203,3 +203,107 @@ func TestAutoUpdatePrecedence(t *testing.T) {
 		}
 	})
 }
+
+// Regression tests for ekilie/ekilied#30: agent.yml is parsed with yaml.v3, so
+// inline comments, quoting, and colons behave the way YAML says they do.
+func TestParseYAMLValues(t *testing.T) {
+	path := writeFixture(t, `api_url: https://engine.example.com:8443/path # prod
+poll_interval: 5 # seconds
+session_token: "tok:en #x"
+agent_id: abc"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.APIURL != "https://engine.example.com:8443/path" {
+		t.Fatalf("APIURL = %q, want the URL without the inline comment", cfg.APIURL)
+	}
+	if cfg.PollInterval != 5 {
+		t.Fatalf("PollInterval = %d, want 5 (inline comment must not corrupt it)", cfg.PollInterval)
+	}
+	if cfg.SessionToken != "tok:en #x" {
+		t.Fatalf("SessionToken = %q, want the quoted value intact", cfg.SessionToken)
+	}
+	if cfg.AgentID != `abc"` {
+		t.Fatalf("AgentID = %q, want the trailing quote preserved", cfg.AgentID)
+	}
+}
+
+// Malformed values must fail startup with an error that names the offending
+// line instead of silently defaulting.
+func TestParseYAMLFailsFast(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		wantKey string
+	}{
+		{
+			name:    "invalid int",
+			content: "api_url: https://x\npoll_interval: not-a-number\n",
+			wantKey: "poll_interval",
+		},
+		{
+			name:    "unknown key",
+			content: "api_url: https://x\npoll_intervall: 5\n",
+			wantKey: "poll_intervall",
+		},
+		{
+			name:    "invalid bool",
+			content: "api_url: https://x\nauto_update: sometimes\n",
+			wantKey: "auto_update",
+		},
+		{
+			name:    "malformed yaml",
+			content: "api_url: [unclosed\n",
+			wantKey: "api_url",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeFixture(t, tc.content)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("Load succeeded, want an error")
+			}
+			if !strings.Contains(err.Error(), tc.wantKey) {
+				t.Fatalf("error %q does not name %q", err, tc.wantKey)
+			}
+		})
+	}
+}
+
+// Setup output must round-trip through Load even when credentials contain
+// YAML-significant characters.
+func TestMarshalSetupRoundTrip(t *testing.T) {
+	setup := SetupConfig{
+		ServerID:     42,
+		AgentID:      `agt_42"`,
+		SessionToken: `ek_session_a:b #c "d"`,
+		APIURL:       "https://engine.example.com",
+		WsURL:        "wss://engine.example.com/api/v1/agents/ws",
+		PollInterval: 5,
+	}
+
+	data, err := MarshalSetup(setup)
+	if err != nil {
+		t.Fatalf("MarshalSetup: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "agent.yml")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ServerID != setup.ServerID || cfg.AgentID != setup.AgentID ||
+		cfg.SessionToken != setup.SessionToken || cfg.APIURL != setup.APIURL ||
+		cfg.WsURL != setup.WsURL || cfg.PollInterval != setup.PollInterval {
+		t.Fatalf("round trip mismatch:\n got: %+v\nwant: %+v", cfg, setup)
+	}
+}
