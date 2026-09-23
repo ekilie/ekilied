@@ -1,4 +1,4 @@
-# ekilied
+![ekilied — Ekilie Cloud Platform Agent](./docs/banner.png)
 
 **`ekilied`** is the Ekilie Cloud platform agent daemon: a single lightweight Go binary that runs on your VPS and connects outbound to the Ekilie Cloud control plane. It manages sites, deployments, SSL certificates, Docker containers, system services, and its own updates.
 
