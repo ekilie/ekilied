@@ -454,10 +454,10 @@ File: `internals/agent/agent.go`, `heartbeat.go`.
 | `httpPollLoop` | poll interval (5s while WS is up) | Fetch pending jobs, dedup, dispatch |
 | `updateCheckLoop` | immediate, then 24h | Check GitHub, self-update, restart |
 
-The heartbeat payload includes CPU, memory, disk, load average, uptime, hostname,
-platform, kernel arch, and agent version. Capabilities are probed once at startup
-(nginx, node, npm, docker, certbot, git, systemctl, php, composer) and sent during
-registration.
+The heartbeat payload includes CPU, memory, disk, load average, host uptime (with
+agent process uptime alongside it), hostname, platform, kernel arch, and agent
+version. Capabilities are probed once at startup (nginx, node, npm, docker, certbot,
+git, systemctl, php, composer) and sent during registration.
 
 ---
 
