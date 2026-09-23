@@ -102,3 +102,50 @@ func TestRestoreSessionFromDBWithoutToken(t *testing.T) {
 		t.Errorf("cfg must not gain a session: %+v", cfg)
 	}
 }
+
+// Regression test for ekilie/ekilied#29: the auto-update flag must only
+// override the config file when it was explicitly passed.
+func TestAutoUpdateOverride(t *testing.T) {
+	var unset Flags
+	if got := autoUpdateOverride(unset); got != nil {
+		t.Fatalf("unset flag override = %v, want nil so the config file wins", got)
+	}
+
+	var on Flags
+	if err := on.AutoUpdate.Set("true"); err != nil {
+		t.Fatalf("Set(true): %v", err)
+	}
+	if got := autoUpdateOverride(on); got == nil || *got != true {
+		t.Fatalf("explicit true override = %v, want true", got)
+	}
+
+	var off Flags
+	if err := off.AutoUpdate.Set("false"); err != nil {
+		t.Fatalf("Set(false): %v", err)
+	}
+	if got := autoUpdateOverride(off); got == nil || *got != false {
+		t.Fatalf("explicit false override = %v, want false", got)
+	}
+}
+
+func TestOptionalBoolParsing(t *testing.T) {
+	var b optionalBool
+	if !b.IsBoolFlag() {
+		t.Fatal("IsBoolFlag = false, want true so --auto-update works without a value")
+	}
+	if got := b.String(); got != "" {
+		t.Fatalf("unset String = %q, want empty", got)
+	}
+	if err := b.Set("false"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if !b.set || b.value {
+		t.Fatalf("after Set(false): set=%v value=%v, want true/false", b.set, b.value)
+	}
+	if got := b.String(); got != "false" {
+		t.Fatalf("String = %q, want false", got)
+	}
+	if err := b.Set("not-a-bool"); err == nil {
+		t.Fatal("invalid boolean accepted")
+	}
+}

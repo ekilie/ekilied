@@ -140,7 +140,7 @@ update_check_interval: 86400
 | `--log-level` | | `debug`, `info`, `warn`, or `error` |
 | `--poll-interval` | | Job poll interval in seconds |
 | `--heartbeat-interval` | | Heartbeat interval in seconds |
-| `--auto-update` | | Enable automatic self-update (default `true`) |
+| `--auto-update` | | Enable automatic self-update. Only overrides `auto_update` from the config file when explicitly passed |
 | `--update-interval` | | Update check interval in seconds (default `86400`) |
 | `--setup` | | Run the one-time registration and write the config, then exit |
 | `--update` | | Check for an update, replace the binary, and exit |
@@ -168,6 +168,7 @@ update_check_interval: 86400
 Notes:
 
 - The registration response can override `poll_interval` and `ws_url`; the server-provided values win over the file.
+- Boolean flags are tri-state: `--auto-update` only overrides the config file when passed explicitly, so `auto_update: false` in `agent.yml` is honored. The effective value and its source are logged at startup.
 - `log_dir`, `socket_path`, and `log_level` are parsed and stored but not yet used by the daemon. Treat them as reserved.
 - When `--data-dir` is set, the database defaults to `<data-dir>/ekilied.db` unless `--db-path` is given.
 
