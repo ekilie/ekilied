@@ -36,8 +36,17 @@ type HeartbeatMetrics struct {
 	MemoryPercent float64   `json:"memory_percent"`
 	DiskPercent   float64   `json:"disk_percent"`
 	LoadAvg       []float64 `json:"load_avg,omitempty"`
-	UptimeSeconds int64     `json:"uptime_seconds"`
-	AgentVersion  string    `json:"agent_version"`
+	// UptimeSeconds is the host's uptime in seconds, not the agent process
+	// uptime. When the host uptime cannot be read it falls back to the agent
+	// uptime and UptimeFallback is set.
+	UptimeSeconds int64 `json:"uptime_seconds"`
+	// AgentUptimeSeconds is how long this agent process has been running.
+	// It resets on every agent restart or self-update.
+	AgentUptimeSeconds int64 `json:"agent_uptime_seconds,omitempty"`
+	// UptimeFallback reports that UptimeSeconds is the agent uptime because
+	// the host uptime was unavailable.
+	UptimeFallback bool   `json:"uptime_fallback,omitempty"`
+	AgentVersion   string `json:"agent_version"`
 
 	// New fields
 	CPUCount         int    `json:"cpu_count,omitempty"`

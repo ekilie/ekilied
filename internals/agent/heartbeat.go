@@ -18,6 +18,10 @@ import (
 
 var startTime = time.Now()
 
+// hostUptimeFunc returns the host uptime in seconds. It is a variable so
+// tests can stub both the value and the error path.
+var hostUptimeFunc = host.Uptime
+
 func collectMetrics() dtos.HeartbeatMetrics {
 	cpuP, _ := cpu.Percent(0, false)
 	memV, _ := mem.VirtualMemory()
@@ -26,13 +30,25 @@ func collectMetrics() dtos.HeartbeatMetrics {
 	hostInfo, _ := host.Info()
 	hostname, _ := os.Hostname()
 
+	agentUptime := int64(time.Since(startTime).Seconds())
+
 	m := dtos.HeartbeatMetrics{
-		CPUPercent:    0.0,
-		MemoryPercent: 0.0,
-		DiskPercent:   0.0,
-		UptimeSeconds: int64(time.Since(startTime).Seconds()),
-		AgentVersion:  config.Version,
-		Hostname:      hostname,
+		CPUPercent:         0.0,
+		MemoryPercent:      0.0,
+		DiskPercent:        0.0,
+		AgentUptimeSeconds: agentUptime,
+		AgentVersion:       config.Version,
+		Hostname:           hostname,
+	}
+
+	// UptimeSeconds is host uptime, matching the diagnostics job. If the host
+	// value is unavailable, fall back to the agent uptime and say so instead
+	// of shipping a silent zero.
+	if hostUptime, err := hostUptimeFunc(); err == nil {
+		m.UptimeSeconds = int64(hostUptime)
+	} else {
+		m.UptimeSeconds = agentUptime
+		m.UptimeFallback = true
 	}
 
 	if len(cpuP) > 0 {
