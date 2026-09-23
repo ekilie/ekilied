@@ -142,6 +142,11 @@ built-in defaults  ->  agent.yml  ->  CLI flags  ->  environment variables
 - `SaveSession(path, agentID, token)` writes credentials back to the YAML file with
   a temp file + `Sync` + rename, forcing mode `0600`.
 
+When `ws_url` is empty it is derived from `api_url` by `deriveWsURL`: `https` becomes
+`wss`, `http` becomes `ws`, and the path is completed to `/api/v1/agents/ws` without
+duplicating an existing `/api/v1` or the full endpoint. The effective control plane
+and WebSocket URLs are logged at startup (never the token).
+
 The important behavior: after a successful registration the session token must be
 persisted, because the registration token is single use on the control plane. If the
 agent restarts without a session, it can never register again. That is why startup

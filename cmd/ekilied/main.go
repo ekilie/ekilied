@@ -195,6 +195,7 @@ func main() {
 		autoUpdateState = "enabled"
 	}
 	log.Printf("auto-update %s (source: %s)", autoUpdateState, cfg.AutoUpdateSource)
+	log.Printf("control plane %s (websocket %s)", cfg.APIURL, cfg.WsURL)
 
 	dbCfg := database.DefaultConfig(cfg.DBPath)
 	if err := database.Connect(dbCfg); err != nil {

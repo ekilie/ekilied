@@ -307,3 +307,66 @@ func TestMarshalSetupRoundTrip(t *testing.T) {
 		t.Fatalf("round trip mismatch:\n got: %+v\nwant: %+v", cfg, setup)
 	}
 }
+
+// Regression tests for ekilie/ekilied#32: the derived WebSocket URL must use
+// the backend's real endpoint, /api/v1/agents/ws.
+func TestDeriveWsURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		api     string
+		want    string
+		wantErr bool
+	}{
+		{name: "bare host", api: "https://engine.ekilie.cloud", want: "wss://engine.ekilie.cloud/api/v1/agents/ws"},
+		{name: "trailing slash", api: "https://engine.ekilie.cloud/", want: "wss://engine.ekilie.cloud/api/v1/agents/ws"},
+		{name: "api prefix", api: "https://engine.ekilie.cloud/api/v1", want: "wss://engine.ekilie.cloud/api/v1/agents/ws"},
+		{name: "api prefix trailing slash", api: "https://engine.ekilie.cloud/api/v1/", want: "wss://engine.ekilie.cloud/api/v1/agents/ws"},
+		{name: "full endpoint", api: "https://engine.ekilie.cloud/api/v1/agents/ws", want: "wss://engine.ekilie.cloud/api/v1/agents/ws"},
+		{name: "http dev", api: "http://localhost:8080", want: "ws://localhost:8080/api/v1/agents/ws"},
+		{name: "custom base path", api: "https://host/backend", want: "wss://host/backend/api/v1/agents/ws"},
+		{name: "scheme-less host", api: "engine.ekilie.cloud", want: "wss://engine.ekilie.cloud/api/v1/agents/ws"},
+		{name: "query dropped", api: "https://engine.ekilie.cloud?debug=1", want: "wss://engine.ekilie.cloud/api/v1/agents/ws"},
+		{name: "no host", api: "https://", wantErr: true},
+		{name: "bad scheme", api: "ftp://engine.ekilie.cloud", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := deriveWsURL(tc.api)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("deriveWsURL(%q) = %q, want error", tc.api, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("deriveWsURL(%q): %v", tc.api, err)
+			}
+			if got != tc.want {
+				t.Fatalf("deriveWsURL(%q) = %q, want %q", tc.api, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadDerivesWsURL(t *testing.T) {
+	path := writeFixture(t, "api_url: https://engine.ekilie.cloud\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := "wss://engine.ekilie.cloud/api/v1/agents/ws"; cfg.WsURL != want {
+		t.Fatalf("WsURL = %q, want %q", cfg.WsURL, want)
+	}
+}
+
+func TestLoadKeepsExplicitWsURL(t *testing.T) {
+	path := writeFixture(t, "api_url: https://engine.ekilie.cloud\nws_url: wss://custom.example.com/socket\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := "wss://custom.example.com/socket"; cfg.WsURL != want {
+		t.Fatalf("WsURL = %q, want the explicit value %q", cfg.WsURL, want)
+	}
+}
