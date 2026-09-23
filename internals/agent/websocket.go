@@ -195,7 +195,7 @@ func (c *WSClient) Connect(ctx context.Context) {
 
 		log.Printf("[ws] [ts=%s] attempting connection to %s", ts(), c.cfg.WsURL)
 		if err := c.connectOnce(ctx); err != nil {
-			log.Printf("[ws] [ts=%s] disconnected: %v — retrying in 5s", ts(), err)
+			log.Printf("[ws] [ts=%s] disconnected: %v, retrying in 5s", ts(), err)
 			time.Sleep(5 * time.Second)
 		} else {
 			log.Printf("[ws] [ts=%s] connectOnce returned nil (shouldn't happen)", ts())
@@ -233,7 +233,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 	c.setConn(conn)
 	c.connected.Store(true)
 
-	// Read pump — receives messages from control plane
+	// Read pump: receives messages from control plane
 	readCh := make(chan []byte, 64)
 	pumps.Add(1)
 	go func() {
@@ -262,7 +262,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 		}
 	}()
 
-	// Egress pump — sends heartbeats and log messages
+	// Egress pump: sends heartbeats and log messages
 	pumps.Add(1)
 	go func() {
 		defer pumps.Done()
@@ -432,7 +432,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 	c.connected.Store(false)
 	c.setConn(nil)
-	log.Printf("[ws] [ts=%s] read channel closed — connection ending", ts())
+	log.Printf("[ws] [ts=%s] read channel closed, connection ending", ts())
 	return fmt.Errorf("connection closed")
 }
 
@@ -505,7 +505,7 @@ func (c *WSClient) SendHeartbeat(ctx context.Context, agentID, sessionToken stri
 
 	var result dtos.HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.PendingJobsCount > 0 {
-		log.Printf("[ws] [ts=%s] HTTP heartbeat ok — %d pending job(s)", t, result.PendingJobsCount)
+		log.Printf("[ws] [ts=%s] HTTP heartbeat ok, %d pending job(s)", t, result.PendingJobsCount)
 	} else {
 		log.Printf("[ws] [ts=%s] HTTP heartbeat ok", t)
 	}

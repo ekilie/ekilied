@@ -134,7 +134,9 @@ built-in defaults  ->  agent.yml  ->  CLI flags  ->  environment variables
 ```
 
 - `Defaults()` holds the values in the README defaults table.
-- `parseYAML` is a deliberately tiny flat parser: `key: value` lines only.
+- The YAML file is parsed with `gopkg.in/yaml.v3` into a pointer mirror struct,
+  so a missing key is distinguishable from a zero value, unknown keys are rejected,
+  and type errors fail startup with the offending line quoted.
 - `WithFlags` applies flag overrides. A `--token` starting with `ek_session_` is
   treated as a session token, anything else as a registration token.
 - `applyEnvOverrides` reads `EKILIED_*` variables last.

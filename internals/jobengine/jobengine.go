@@ -256,8 +256,8 @@ func (lb *LogBatcher) Close() {
 type JobEngine struct {
 	client     JobClient
 	deployLk   *DeployLock
-	active     sync.Map      // map[uint]struct{} — tracks actively executing job IDs
-	dispatched sync.Map      // map[uint]struct{} — tracks jobs already WS-triggered so poll skips them
+	active     sync.Map      // map[uint]struct{}: tracks actively executing job IDs
+	dispatched sync.Map      // map[uint]struct{}: tracks jobs already WS-triggered so poll skips them
 	semaphore  chan struct{} // limits concurrent job executions
 }
 
