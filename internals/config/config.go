@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -187,13 +188,13 @@ func Load(path string, opts ...ConfigOption) (*Config, error) {
 	// 4. Fill defaults for any zero values
 	cfg.SetDefaults()
 
-	// 5. Infer WsURL from APIURL if not set
+	// 5. Derive WsURL from APIURL if not set
 	if cfg.WsURL == "" && cfg.APIURL != "" {
-		cfg.WsURL = strings.Replace(cfg.APIURL, "https://", "wss://", 1)
-		if !strings.HasPrefix(cfg.WsURL, "wss://") && !strings.HasPrefix(cfg.WsURL, "ws://") {
-			cfg.WsURL = "wss://" + cfg.APIURL
+		wsURL, err := deriveWsURL(cfg.APIURL)
+		if err != nil {
+			return nil, fmt.Errorf("derive ws_url from api_url: %w", err)
 		}
-		cfg.WsURL += "/agents/ws"
+		cfg.WsURL = wsURL
 	}
 
 	// 6. Validate
@@ -202,6 +203,53 @@ func Load(path string, opts ...ConfigOption) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// deriveWsURL builds the agent WebSocket URL from the control plane API URL.
+// The backend serves the agent socket at /api/v1/agents/ws, so a bare host
+// must get the full path; an api_url that already includes /api/v1 (or the
+// full endpoint) must not get it twice.
+func deriveWsURL(apiURL string) (string, error) {
+	u, err := url.Parse(apiURL)
+	if err != nil {
+		return "", fmt.Errorf("parse %q: %w", apiURL, err)
+	}
+	if u.Scheme == "" {
+		// Tolerate scheme-less values such as "engine.ekilie.cloud" by
+		// assuming HTTPS, matching the old derivation's behavior.
+		u, err = url.Parse("https://" + apiURL)
+		if err != nil {
+			return "", fmt.Errorf("parse %q: %w", apiURL, err)
+		}
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("api_url %q has no host", apiURL)
+	}
+
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	case "wss", "ws":
+		// Already a WebSocket URL; keep the scheme.
+	default:
+		return "", fmt.Errorf("api_url %q has unsupported scheme %q", apiURL, u.Scheme)
+	}
+
+	path := strings.TrimSuffix(u.Path, "/")
+	switch {
+	case strings.HasSuffix(path, "/api/v1/agents/ws"):
+		// Already the full endpoint.
+	case strings.HasSuffix(path, "/api/v1"):
+		path += "/agents/ws"
+	default:
+		path += "/api/v1/agents/ws"
+	}
+	u.Path = path
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
 }
 
 func (c *Config) NeedsRegistration() bool {

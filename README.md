@@ -132,7 +132,7 @@ update_check_interval: 86400
 |---|---|---|
 | `--config` | `-c` | Config file path (default `/etc/ekilie/agent.yml`) |
 | `--api-url` | `-a` | Control plane URL, for example `https://engine.ekilie.cloud` |
-| `--ws-url` | | WebSocket URL. Normally supplied by the control plane during registration |
+| `--ws-url` | | WebSocket URL. Defaults to `wss://<api host>/api/v1/agents/ws`, derived from `--api-url`; the control plane can override it at registration |
 | `--token` | `-t` | Registration token, or a session token when it starts with `ek_session_` |
 | `--server-id` | `-s` | Server / instance ID |
 | `--db-path` | | SQLite database path (default `<data-dir>/agent.db`) |
