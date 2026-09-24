@@ -118,7 +118,7 @@ type Config struct {
 
 func Defaults() *Config {
 	return &Config{
-		PollInterval:        1,
+		PollInterval:        5,
 		HeartbeatInterval:   30,
 		DBPath:              "/opt/ekilie/agent/agent.db",
 		DataDir:             "/opt/ekilie/agent",
