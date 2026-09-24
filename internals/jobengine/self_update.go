@@ -206,6 +206,12 @@ func SelfUpdate(repo string, release *GitHubRelease) error {
 	}
 
 	os.Chmod(selfPath, 0755)
+	// Release archives store the build user's uid, which on target hosts can
+	// map to a non-root account. This binary runs as root, so only root should
+	// own it afterwards.
+	if err := os.Chown(selfPath, 0, 0); err != nil {
+		log.Printf("[update] warning: could not chown %s to root: %v", selfPath, err)
+	}
 	log.Printf("[update] updated: %s → %s", release.TagName, selfPath)
 
 	return nil

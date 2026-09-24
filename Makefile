@@ -15,6 +15,10 @@ LDFLAGS     := -s -w \
 BUILD_FLAGS := -trimpath
 BUILD_DIR   := ./build
 CGO_ENABLED ?= 0
+# Release archives are extracted by a root daemon on target hosts. Store root
+# ownership so self-updates do not leave the binary owned by a build-machine
+# uid that maps to a local account (for example ubuntu:ubuntu).
+TAR         := tar --owner=root --group=root
 
 # ── Development ───────────────────────────────────────────────────────────────
 build:
@@ -48,10 +52,10 @@ build-all: deps
 	GOOS=darwin  GOARCH=arm64 CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME)-darwin-arm64  ./cmd/$(APP_NAME)
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME)-windows-amd64.exe ./cmd/$(APP_NAME)
 	@echo "==> Packaging archives..."
-	cd $(BUILD_DIR) && cp $(APP_NAME)-linux-amd64  $(APP_NAME) && tar czf $(APP_NAME)-linux-amd64.tar.gz  $(APP_NAME) && rm $(APP_NAME)
-	cd $(BUILD_DIR) && cp $(APP_NAME)-linux-arm64  $(APP_NAME) && tar czf $(APP_NAME)-linux-arm64.tar.gz  $(APP_NAME) && rm $(APP_NAME)
-	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-amd64 $(APP_NAME) && tar czf $(APP_NAME)-darwin-amd64.tar.gz $(APP_NAME) && rm $(APP_NAME)
-	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-arm64 $(APP_NAME) && tar czf $(APP_NAME)-darwin-arm64.tar.gz $(APP_NAME) && rm $(APP_NAME)
+	cd $(BUILD_DIR) && cp $(APP_NAME)-linux-amd64  $(APP_NAME) && $(TAR) -czf $(APP_NAME)-linux-amd64.tar.gz  $(APP_NAME) && rm $(APP_NAME)
+	cd $(BUILD_DIR) && cp $(APP_NAME)-linux-arm64  $(APP_NAME) && $(TAR) -czf $(APP_NAME)-linux-arm64.tar.gz  $(APP_NAME) && rm $(APP_NAME)
+	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-amd64 $(APP_NAME) && $(TAR) -czf $(APP_NAME)-darwin-amd64.tar.gz $(APP_NAME) && rm $(APP_NAME)
+	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-arm64 $(APP_NAME) && $(TAR) -czf $(APP_NAME)-darwin-arm64.tar.gz $(APP_NAME) && rm $(APP_NAME)
 	cd $(BUILD_DIR) && cp $(APP_NAME)-windows-amd64.exe $(APP_NAME).exe && zip $(APP_NAME)-windows-amd64.zip $(APP_NAME).exe && rm $(APP_NAME).exe
 	@echo "==> Done! Binaries in $(BUILD_DIR)/"
 
@@ -60,16 +64,16 @@ build-linux: deps
 	mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME)-linux-amd64 ./cmd/$(APP_NAME)
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME)-linux-arm64 ./cmd/$(APP_NAME)
-	cd $(BUILD_DIR) && cp $(APP_NAME)-linux-amd64 $(APP_NAME) && tar czf $(APP_NAME)-linux-amd64.tar.gz $(APP_NAME) && rm $(APP_NAME)
-	cd $(BUILD_DIR) && cp $(APP_NAME)-linux-arm64 $(APP_NAME) && tar czf $(APP_NAME)-linux-arm64.tar.gz $(APP_NAME) && rm $(APP_NAME)
+	cd $(BUILD_DIR) && cp $(APP_NAME)-linux-amd64 $(APP_NAME) && $(TAR) -czf $(APP_NAME)-linux-amd64.tar.gz $(APP_NAME) && rm $(APP_NAME)
+	cd $(BUILD_DIR) && cp $(APP_NAME)-linux-arm64 $(APP_NAME) && $(TAR) -czf $(APP_NAME)-linux-arm64.tar.gz $(APP_NAME) && rm $(APP_NAME)
 
 build-darwin: deps
 	@echo "==> Building for macOS..."
 	mkdir -p $(BUILD_DIR)
 	GOOS=darwin GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME)-darwin-amd64 ./cmd/$(APP_NAME)
 	GOOS=darwin GOARCH=arm64 CGO_ENABLED=$(CGO_ENABLED) go build $(BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME)-darwin-arm64 ./cmd/$(APP_NAME)
-	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-amd64 $(APP_NAME) && tar czf $(APP_NAME)-darwin-amd64.tar.gz $(APP_NAME) && rm $(APP_NAME)
-	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-arm64 $(APP_NAME) && tar czf $(APP_NAME)-darwin-arm64.tar.gz $(APP_NAME) && rm $(APP_NAME)
+	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-amd64 $(APP_NAME) && $(TAR) -czf $(APP_NAME)-darwin-amd64.tar.gz $(APP_NAME) && rm $(APP_NAME)
+	cd $(BUILD_DIR) && cp $(APP_NAME)-darwin-arm64 $(APP_NAME) && $(TAR) -czf $(APP_NAME)-darwin-arm64.tar.gz $(APP_NAME) && rm $(APP_NAME)
 
 # ── SHA256 checksums ─────────────────────────────────────────────────────────
 # Tolerates missing archive types (linux-only builds produce no .zip files).
