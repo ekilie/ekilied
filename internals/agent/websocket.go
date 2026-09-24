@@ -259,12 +259,13 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 
 	var pumps sync.WaitGroup
 
-	url := c.cfg.WsURL + "?token=" + c.cfg.SessionToken
-
-	log.Printf("[ws] [ts=%s] dialing %s", ts(), url)
-	conn, _, err := websocket.Dial(connCtx, url, &websocket.DialOptions{
+	// Auth travels in the Authorization header. The token is never put in the
+	// URL query string, so it cannot leak into proxy access logs or journald.
+	log.Printf("[ws] [ts=%s] dialing %s", ts(), c.cfg.WsURL)
+	conn, _, err := websocket.Dial(connCtx, c.cfg.WsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"User-Agent": []string{"ekilied/1.0"},
+			"User-Agent":    []string{"ekilied/1.0"},
+			"Authorization": []string{"Bearer " + c.cfg.SessionToken},
 		},
 	})
 	if err != nil {
@@ -308,7 +309,7 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 	pumps.Add(1)
 	go func() {
 		defer pumps.Done()
-		defer log.Printf("[ws] [ts=%s] egress pump exiting", ts())
+		defer func() { log.Printf("[ws] [ts=%s] egress pump exiting", ts()) }()
 		for {
 			select {
 			case <-connCtx.Done():

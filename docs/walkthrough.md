@@ -238,7 +238,7 @@ connectOnce(ctx)
  │
  ├─ connCtx = WithCancel(ctx); defer connCancel()
  ├─ pumps WaitGroup
- ├─ websocket.Dial(connCtx, wsUrl + "?token=" + session)
+ ├─ websocket.Dial(connCtx, wsUrl, Authorization: Bearer <session>)
  ├─ setConn(conn); connected = true
  ├─ spawn read pump    -> readCh (drop when full, never block the socket)
  ├─ spawn egress pump  -> egress (high) then egressLow (low)
@@ -522,9 +522,10 @@ The daemon runs as root, so the trust boundaries are explicit.
 | Docker streaming | 5 streams, tail and line limits | `logstream.go` |
 
 Known gaps are tracked in the repository issue tracker. The most important ones for a
-new reader: release artifacts are checksum-verified but not signed, the session token
-is still passed in the WebSocket URL query string, and command-level hardening
-(allowlists) is still open.
+new reader: release artifacts are checksum-verified but not signed, and command-level
+hardening (allowlists) is still open. The agent authenticates the WebSocket with an
+`Authorization: Bearer` header; the backend still accepts the old `?token=` query
+parameter for agents that have not updated yet.
 
 ---
 
