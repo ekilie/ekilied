@@ -233,13 +233,16 @@ func (e *Ekilied) heartbeatLoop() {
 	}
 }
 
-func (e *Ekilied) httpPollLoop() {
-	for {
-		interval := time.Duration(e.cfg.PollInterval) * time.Second
-		if e.ws.Connected() {
-			interval = 5 * time.Second
-		}
+// pollInterval is the configured job poll cadence, used whether or not the
+// WebSocket is connected. WS triggers are real time; polling is the catch-up
+// channel, so a single interval keeps the poll_interval knob predictable.
+func (e *Ekilied) pollInterval() time.Duration {
+	return time.Duration(e.cfg.PollInterval) * time.Second
+}
 
+func (e *Ekilied) httpPollLoop() {
+	interval := e.pollInterval()
+	for {
 		timer := time.NewTimer(interval)
 		select {
 		case <-e.ctx.Done():

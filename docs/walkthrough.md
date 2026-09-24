@@ -465,7 +465,7 @@ File: `internals/agent/agent.go`, `heartbeat.go`.
 | Loop | Cadence | Job |
 |---|---|---|
 | `heartbeatLoop` | 30s | Collect metrics, send over WS or HTTP, update local `last_heartbeat` |
-| `httpPollLoop` | poll interval (5s while WS is up) | Fetch pending jobs, dedup, dispatch |
+| `httpPollLoop` | poll interval (default 5s, server may override) | Fetch pending jobs, dedup, dispatch |
 | `updateCheckLoop` | immediate, then 24h | Check GitHub, self-update, restart |
 
 The heartbeat payload includes CPU, memory, disk, load average, host uptime (with

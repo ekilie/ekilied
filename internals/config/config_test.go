@@ -370,3 +370,40 @@ func TestLoadKeepsExplicitWsURL(t *testing.T) {
 		t.Fatalf("WsURL = %q, want the explicit value %q", cfg.WsURL, want)
 	}
 }
+
+// Regression tests for ekilie/ekilied#28: one default poll interval and a
+// documented precedence (server > env > flags > file > defaults).
+func TestPollIntervalDefault(t *testing.T) {
+	if got := Defaults().PollInterval; got != 5 {
+		t.Fatalf("Defaults().PollInterval = %d, want 5", got)
+	}
+}
+
+func TestPollIntervalPrecedence(t *testing.T) {
+	path := writeFixture(t, "api_url: https://engine.example.com\npoll_interval: 30\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PollInterval != 30 {
+		t.Fatalf("file poll_interval = %d, want 30", cfg.PollInterval)
+	}
+
+	cfg, err = Load(path, WithFlags(FlagOverrides{PollInterval: 45}))
+	if err != nil {
+		t.Fatalf("Load with flag: %v", err)
+	}
+	if cfg.PollInterval != 45 {
+		t.Fatalf("flag poll_interval = %d, want 45", cfg.PollInterval)
+	}
+
+	t.Setenv("EKILIED_POLL_INTERVAL", "60")
+	cfg, err = Load(path, WithFlags(FlagOverrides{PollInterval: 45}))
+	if err != nil {
+		t.Fatalf("Load with env: %v", err)
+	}
+	if cfg.PollInterval != 60 {
+		t.Fatalf("env poll_interval = %d, want 60", cfg.PollInterval)
+	}
+}

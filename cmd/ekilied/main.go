@@ -196,6 +196,7 @@ func main() {
 	}
 	log.Printf("auto-update %s (source: %s)", autoUpdateState, cfg.AutoUpdateSource)
 	log.Printf("control plane %s (websocket %s)", cfg.APIURL, cfg.WsURL)
+	log.Printf("job poll interval: %ds", cfg.PollInterval)
 
 	dbCfg := database.DefaultConfig(cfg.DBPath)
 	if err := database.Connect(dbCfg); err != nil {

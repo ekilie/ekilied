@@ -161,13 +161,13 @@ update_check_interval: 86400
 | Log directory | `/var/log/ekilie` |
 | Socket path | `/var/run/ekilie/agent.sock` |
 | Log level | `info` |
-| Poll interval | `poll_interval` from config (the installer writes 5; built-in default is 1). While the WebSocket is connected the poll loop uses 5 seconds |
+| Poll interval | 5 seconds, used whether or not the WebSocket is connected |
 | Heartbeat interval | 30 seconds |
 | Auto-update | Enabled, checked at startup and every 24 hours |
 
 Notes:
 
-- The registration response can override `poll_interval` and `ws_url`; the server-provided values win over the file.
+- The registration response can override `poll_interval` and `ws_url`. Precedence: server-provided value > environment > flags > config file > defaults. The effective poll interval is logged at startup.
 - Boolean flags are tri-state: `--auto-update` only overrides the config file when passed explicitly, so `auto_update: false` in `agent.yml` is honored. The effective value and its source are logged at startup.
 - `log_dir`, `socket_path`, and `log_level` are parsed and stored but not yet used by the daemon. Treat them as reserved.
 - When `--data-dir` is set, the database defaults to `<data-dir>/ekilied.db` unless `--db-path` is given.

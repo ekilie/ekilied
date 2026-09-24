@@ -174,6 +174,7 @@ func (c *WSClient) Register(ctx context.Context, capabilities []dtos.Capability)
 	}
 	if result.PollInterval > 0 {
 		c.cfg.PollInterval = result.PollInterval
+		log.Printf("control plane set poll interval to %ds", result.PollInterval)
 	}
 
 	log.Printf("registered: agent_id=%s", result.AgentID)
