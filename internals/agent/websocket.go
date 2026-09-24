@@ -415,7 +415,9 @@ func (c *WSClient) connectOnce(ctx context.Context) error {
 			json.Unmarshal(envelope.Payload, &payload)
 			if payload.NewToken != "" {
 				c.cfg.SessionToken = payload.NewToken
-				log.Printf("[ws] [ts=%s] token rotated: new=%.20s...", t, payload.NewToken)
+				// Never log any part of the token; rotated tokens are still
+				// live credentials.
+				log.Printf("[ws] [ts=%s] token rotated (%d chars)", t, len(payload.NewToken))
 			} else {
 				log.Printf("[ws] [ts=%s] token_rotated: empty token ignored", t)
 			}
