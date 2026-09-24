@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -181,10 +182,19 @@ func (c *WSClient) Register(ctx context.Context, capabilities []dtos.Capability)
 
 // ── WebSocket connect loop (primary) ─────────────────────────────────────
 
-// Connect runs the WebSocket connection loop. It attempts to connect and,
-// if the connection drops, waits 5 seconds before retrying. It blocks
-// until the context is cancelled.
+// Reconnect backoff bounds. The first retry is quick; later failures back off
+// exponentially with jitter so a control-plane outage does not turn into a
+// reconnect storm across the fleet (and does not trip the server's rate limit).
+const (
+	reconnectBaseDelay  = 1 * time.Second
+	reconnectMaxDelay   = 2 * time.Minute
+	reconnectResetAfter = 30 * time.Second
+)
+
+// Connect runs the WebSocket connection loop with exponential backoff and
+// jitter until the context is cancelled. It blocks.
 func (c *WSClient) Connect(ctx context.Context) {
+	attempt := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -194,13 +204,45 @@ func (c *WSClient) Connect(ctx context.Context) {
 		}
 
 		log.Printf("[ws] [ts=%s] attempting connection to %s", ts(), c.cfg.WsURL)
-		if err := c.connectOnce(ctx); err != nil {
-			log.Printf("[ws] [ts=%s] disconnected: %v, retrying in 5s", ts(), err)
-			time.Sleep(5 * time.Second)
-		} else {
+		startedAt := time.Now()
+		err := c.connectOnce(ctx)
+		if time.Since(startedAt) >= reconnectResetAfter {
+			// The connection was healthy for a while; treat the next failure
+			// as fresh instead of inheriting an old backoff.
+			attempt = 0
+		}
+		if err == nil {
 			log.Printf("[ws] [ts=%s] connectOnce returned nil (shouldn't happen)", ts())
+			continue
+		}
+
+		delay := reconnectDelay(attempt)
+		attempt++
+		log.Printf("[ws] [ts=%s] disconnected: %v, retrying in %s", ts(), err, delay)
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
 	}
+}
+
+// reconnectDelay returns the backoff for the given attempt with jitter: the
+// first retry waits 0.5 to 1 second, later retries grow to a 1 to 2 minute
+// ceiling.
+func reconnectDelay(attempt int) time.Duration {
+	delay := reconnectBaseDelay
+	for i := 0; i < attempt && delay < reconnectMaxDelay; i++ {
+		delay *= 2
+	}
+	if delay > reconnectMaxDelay {
+		delay = reconnectMaxDelay
+	}
+	half := delay / 2
+	return half + rand.N(half+1)
 }
 
 // connectOnce dials the WebSocket URL, sets up read/egress/ping goroutines,

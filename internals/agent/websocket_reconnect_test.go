@@ -162,3 +162,23 @@ func TestEgressMessagesReachLiveConnectionAfterReconnect(t *testing.T) {
 		t.Fatal("connectOnce did not return after closing the live connection")
 	}
 }
+
+// The reconnect backoff must stay within its jittered bounds and grow with
+// attempts, so a fleet outage cannot become a reconnect storm.
+func TestReconnectDelayBounds(t *testing.T) {
+	cases := []struct {
+		attempt int
+		min     time.Duration
+		max     time.Duration
+	}{
+		{attempt: 0, min: reconnectBaseDelay / 2, max: reconnectBaseDelay},
+		{attempt: 1, min: reconnectBaseDelay, max: 2 * reconnectBaseDelay},
+		{attempt: 10, min: reconnectMaxDelay / 2, max: reconnectMaxDelay},
+	}
+	for _, tc := range cases {
+		delay := reconnectDelay(tc.attempt)
+		if delay < tc.min || delay > tc.max {
+			t.Fatalf("reconnectDelay(%d) = %s, want within [%s, %s]", tc.attempt, delay, tc.min, tc.max)
+		}
+	}
+}
