@@ -423,7 +423,7 @@ maps to a file.
 | `install_nginx` / `ssl_issue` | `nginx.go` | apt + certbot |
 | `install_node` / `install_bun` | `node.go`, `bun.go` | Runtime installs |
 | `ssh_key_add` / `ssh_key_remove` | `ssh.go` | `authorized_keys` |
-| `service_restart` | `system.go` | `systemctl restart` |
+| `service_restart` | `system.go` | `systemctl restart` for allowlisted units only |
 | `daemon_*` | `supervisor.go` | Supervisor program CRUD |
 | `diagnostics` | `diagnostics.go` | Metrics report |
 | `self_update` | `self_update.go`, `restart.go` | Release update + restart |

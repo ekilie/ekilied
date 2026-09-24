@@ -492,7 +492,8 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 
 	case "service_restart":
 		service, _ := params["service"].(string)
-		execErr = restartService(ctx, lb, service)
+		writeLog("[service] restarting %s...", service)
+		execErr = restartService(ctx, lb, jobID, service)
 
 	case "daemon_install_supervisor":
 		writeLog("[daemon] installing supervisor...")

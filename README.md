@@ -82,7 +82,7 @@ WebSocket connections are kept alive with a 30 second ping, and reconnect automa
 | `ssl_issue` | Issue a certificate with certbot in nginx mode (`--non-interactive --agree-tos --redirect`). |
 | `ssh_key_add` | Append a public key to `/root/.ssh/authorized_keys` (duplicate-safe, mode `0600`). |
 | `ssh_key_remove` | Remove a public key from `/root/.ssh/authorized_keys`. |
-| `service_restart` | Run `systemctl restart <service>`. |
+| `service_restart` | Restart an allowlisted systemd service: `nginx`, `supervisor`, or a per-site `ekilie-<site>` unit. Anything else fails the job. |
 | `daemon_install_supervisor` | Install supervisor with apt, then enable and start the service. |
 | `daemon_create` | Write a supervisor program named `<site>-<name>` that runs as the `ekilie` user with `numprocs=<scale>` in the site's `current/` directory, logs under `sites/<name>/logs`, then reload supervisor. |
 | `daemon_delete` | Stop, remove, and delete a supervisor program config. |
