@@ -153,25 +153,49 @@ func (lb *LogBatcher) appendLineLocked(stream, level, source, line string) {
 	})
 }
 
+// flushInterval is how often buffered lines are pushed to the control plane.
+// 50ms keeps the terminal feeling live (one to two frames of latency) while
+// still batching a burst of output into one HTTP request.
+const flushInterval = 50 * time.Millisecond
+
+// bigBatchFlush is the number of buffered lines that triggers an immediate
+// flush (no waiting for the next tick) so a fast build does not accumulate
+// output faster than the ticker can drain it.
+const bigBatchFlush = 32
+
+// append implements io.Writer for stdout and stderr lines. A large burst
+// flushes early (no waiting for the next tick) so throughput does not depend
+// on the ticker cadence alone.
 func (lb *LogBatcher) append(stream string, p []byte) (int, error) {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
-	lb.lastAppend = time.Now()
 	level := "info"
 	if stream == "stderr" {
 		level = "error"
 	}
+	lb.lastAppend = time.Now()
 	for _, line := range splitLines(string(p)) {
 		if line == "" {
 			continue
 		}
 		lb.appendLineLocked(stream, level, "job", line)
 	}
+	if len(lb.lines) < bigBatchFlush {
+		n := len(p)
+		lb.mu.Unlock()
+		return n, nil
+	}
+	batch := lb.lines
+	lb.lines = nil
+	lb.mu.Unlock()
+	// Flush outside the lock: a slow HTTP round trip must not block writers.
+	if err := lb.client.StreamLogs(lb.ctx, lb.jobID, batch); err != nil {
+		log.Printf("log flush error: %v", err)
+	}
 	return len(p), nil
 }
 
 func (lb *LogBatcher) flushLoop() {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
 	for {
 		select {
