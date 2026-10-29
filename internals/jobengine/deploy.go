@@ -83,7 +83,18 @@ func cloneRepo(ctx context.Context, repoDir, repoURL, branch, gitToken, commitSH
 		}
 		// Defensive: never keep credentials in origin, even if a future git
 		// version rewrites the URL.
-		return runGit(ctx, repoDir, []string{"remote", "set-url", "origin", cleanURL}, env, out)
+		if err := runGit(ctx, repoDir, []string{"remote", "set-url", "origin", cleanURL}, env, out); err != nil {
+			return err
+		}
+		if commitSHA != "" {
+			if err := runGit(ctx, repoDir, []string{"checkout", "-f", "-q", commitSHA}, env, out); err != nil {
+				if err := runGit(ctx, repoDir, []string{"fetch", "--depth=1", "origin", commitSHA}, env, out); err != nil {
+					return err
+				}
+				return runGit(ctx, repoDir, []string{"checkout", "-f", "-q", commitSHA}, env, out)
+			}
+		}
+		return nil
 	}
 
 	// Existing checkout: drop any stale token from origin first, then fetch
