@@ -193,27 +193,72 @@ func SelfUpdate(repo string, release *GitHubRelease) error {
 		return fmt.Errorf("get executable path: %w", err)
 	}
 
-	backupPath := selfPath + ".bak"
-	os.Remove(backupPath)
-
-	if err := os.Rename(selfPath, backupPath); err != nil {
-		return fmt.Errorf("backup current binary: %w", err)
+	if err := replaceBinary(selfPath, binaryPath); err != nil {
+		return err
 	}
 
-	if err := os.Rename(binaryPath, selfPath); err != nil {
-		os.Rename(backupPath, selfPath)
-		return fmt.Errorf("replace binary: %w", err)
-	}
+	log.Printf("[update] updated: %s → %s", release.TagName, selfPath)
 
-	os.Chmod(selfPath, 0755)
+	return nil
+}
+
+// replaceBinary installs newBinaryPath as selfPath. The new binary is copied
+// into a temporary file next to the target before the final rename, because
+// rename(2) cannot cross filesystems: /tmp is often tmpfs while /usr/local/bin
+// lives on the root filesystem.
+func replaceBinary(selfPath, newBinaryPath string) error {
+	targetDir := filepath.Dir(selfPath)
+	staged, err := os.CreateTemp(targetDir, ".ekilied-update-*")
+	if err != nil {
+		return fmt.Errorf("stage new binary in %s: %w", targetDir, err)
+	}
+	stagedPath := staged.Name()
+	defer os.Remove(stagedPath) // no-op after a successful rename
+
+	src, err := os.Open(newBinaryPath)
+	if err != nil {
+		staged.Close()
+		return fmt.Errorf("open new binary: %w", err)
+	}
+	if _, err := io.Copy(staged, src); err != nil {
+		src.Close()
+		staged.Close()
+		return fmt.Errorf("copy new binary: %w", err)
+	}
+	if err := src.Close(); err != nil {
+		staged.Close()
+		return fmt.Errorf("close new binary: %w", err)
+	}
+	if err := staged.Sync(); err != nil {
+		staged.Close()
+		return fmt.Errorf("sync new binary: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return fmt.Errorf("close staged binary: %w", err)
+	}
+	if err := os.Chmod(stagedPath, 0755); err != nil {
+		return fmt.Errorf("chmod staged binary: %w", err)
+	}
 	// Release archives store the build user's uid, which on target hosts can
 	// map to a non-root account. This binary runs as root, so only root should
 	// own it afterwards.
-	if err := os.Chown(selfPath, 0, 0); err != nil {
-		log.Printf("[update] warning: could not chown %s to root: %v", selfPath, err)
+	if os.Geteuid() == 0 {
+		if err := os.Chown(stagedPath, 0, 0); err != nil {
+			log.Printf("[update] warning: could not chown %s to root: %v", stagedPath, err)
+		}
 	}
-	log.Printf("[update] updated: %s → %s", release.TagName, selfPath)
 
+	backupPath := selfPath + ".bak"
+	if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove old backup: %w", err)
+	}
+	if err := os.Rename(selfPath, backupPath); err != nil {
+		return fmt.Errorf("backup current binary: %w", err)
+	}
+	if err := os.Rename(stagedPath, selfPath); err != nil {
+		os.Rename(backupPath, selfPath)
+		return fmt.Errorf("replace binary: %w", err)
+	}
 	return nil
 }
 

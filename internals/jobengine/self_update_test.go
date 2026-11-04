@@ -2,6 +2,9 @@ package jobengine
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -71,5 +74,114 @@ func TestSelfUpdateSequentialAfterFailure(t *testing.T) {
 	}
 	if updateInProgress.Load() {
 		t.Fatal("guard still held after sequential attempts")
+	}
+}
+
+func writeBinary(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// Regression test for the cross-device update failure: the extracted binary
+// used to be renamed from /tmp straight into /usr/local/bin, which fails with
+// EXDEV when /tmp is tmpfs.
+func TestReplaceBinaryAcrossFilesystems(t *testing.T) {
+	if info, err := os.Stat("/dev/shm"); err != nil || !info.IsDir() {
+		t.Skip("/dev/shm is not available")
+	}
+
+	srcDir, err := os.MkdirTemp("/dev/shm", "ekilied-update-test-*")
+	if err != nil {
+		t.Skipf("cannot use /dev/shm: %v", err)
+	}
+	defer os.RemoveAll(srcDir)
+
+	targetDir := t.TempDir()
+	selfPath := filepath.Join(targetDir, "ekilied")
+	newPath := filepath.Join(srcDir, "ekilied")
+
+	writeBinary(t, selfPath, "old binary")
+	writeBinary(t, newPath, "new binary")
+
+	if err := replaceBinary(selfPath, newPath); err != nil {
+		t.Fatalf("replaceBinary: %v", err)
+	}
+
+	got, err := os.ReadFile(selfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new binary" {
+		t.Fatalf("installed binary = %q, want %q", got, "new binary")
+	}
+
+	backup, err := os.ReadFile(selfPath + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != "old binary" {
+		t.Fatalf("backup = %q, want %q", backup, "old binary")
+	}
+
+	leftovers, err := filepath.Glob(filepath.Join(targetDir, ".ekilied-update-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("staged files left behind: %v", leftovers)
+	}
+
+	info, err := os.Stat(selfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Fatalf("installed mode = %o, want 755", got)
+	}
+}
+
+func TestReplaceBinarySameFilesystem(t *testing.T) {
+	targetDir := t.TempDir()
+	selfPath := filepath.Join(targetDir, "ekilied")
+	newPath := filepath.Join(t.TempDir(), "ekilied")
+
+	writeBinary(t, selfPath, "old binary")
+	writeBinary(t, newPath, "new binary")
+
+	if err := replaceBinary(selfPath, newPath); err != nil {
+		t.Fatalf("replaceBinary: %v", err)
+	}
+
+	got, err := os.ReadFile(selfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new binary" {
+		t.Fatalf("installed binary = %q, want %q", got, "new binary")
+	}
+}
+
+func TestReplaceBinaryRestoresOnRenameFailure(t *testing.T) {
+	targetDir := t.TempDir()
+	selfPath := filepath.Join(targetDir, "ekilied")
+	writeBinary(t, selfPath, "old binary")
+
+	// A missing source makes staging fail before the current binary is moved,
+	// so the old binary must stay in place.
+	err := replaceBinary(selfPath, filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("expected an error for a missing source binary")
+	}
+	if !strings.Contains(err.Error(), "open new binary") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, readErr := os.ReadFile(selfPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "old binary" {
+		t.Fatalf("self binary changed to %q", got)
 	}
 }
