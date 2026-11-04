@@ -508,11 +508,15 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 
 	case "ssh_key_add":
 		publicKey, _ := params["public_key"].(string)
-		execErr = addSSHKey(publicKey)
+		accounts := sshKeyAccounts()
+		writeLog("[ssh] adding key to %s", accountNames(accounts))
+		execErr = addSSHKeyForAccounts(publicKey, accounts)
 
 	case "ssh_key_remove":
 		publicKey, _ := params["public_key"].(string)
-		execErr = removeSSHKey(publicKey)
+		accounts := sshKeyAccounts()
+		writeLog("[ssh] removing key from %s", accountNames(accounts))
+		execErr = removeSSHKeyForAccounts(publicKey, accounts)
 
 	case "service_restart":
 		service, _ := params["service"].(string)
