@@ -73,6 +73,32 @@ func issueSSL(ctx context.Context, out io.Writer, domain, email string) error {
 	return run(ctx, out, "certbot", args...)
 }
 
+// generateStaticSiteNginxConfig builds an HTTP-only nginx vhost that serves
+// a directory from the site's checkout directly. Single-page apps fall back
+// to index.html so client-side routes survive a refresh.
+func generateStaticSiteNginxConfig(siteName, domain, rootDir string) string {
+	return fmt.Sprintf(`# Ekilie static site: %s
+server {
+    listen 80;
+    listen [::]:80;
+    server_name %s;
+
+    # ACME challenge passthrough for a later ssl_issue job.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+    }
+
+    root %s;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+`, siteName, domain, rootDir)
+}
+
 // generateSiteNginxConfig builds an HTTP-only nginx vhost that reverse-proxies
 // the site's domain to the local app port. SSL is intentionally not configured
 // here; a separate ssl_issue job obtains the certificate later, and the

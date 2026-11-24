@@ -57,6 +57,42 @@ func TestSiteDirPathContainment(t *testing.T) {
 	}
 }
 
+func TestStaticRootPath(t *testing.T) {
+	cases := []struct {
+		name       string
+		publishDir string
+		want       string
+		wantErr    bool
+	}{
+		{name: "default", want: "/opt/ekilie/sites/my-site/current/dist"},
+		{name: "dot slash", publishDir: "./dist", want: "/opt/ekilie/sites/my-site/current/dist"},
+		{name: "build dir", publishDir: "build", want: "/opt/ekilie/sites/my-site/current/build"},
+		{name: "nested", publishDir: ".output/public", want: "/opt/ekilie/sites/my-site/current/.output/public"},
+		{name: "current", publishDir: ".", want: "/opt/ekilie/sites/my-site/current"},
+		{name: "absolute", publishDir: "/etc", wantErr: true},
+		{name: "traversal", publishDir: "../other", wantErr: true},
+		{name: "deep traversal", publishDir: "a/../../b", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := staticRootPath("my-site", tc.publishDir)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("staticRootPath(%q) = %q, want error", tc.publishDir, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("staticRootPath(%q): %v", tc.publishDir, err)
+			}
+			if got != tc.want {
+				t.Fatalf("staticRootPath(%q) = %q, want %q", tc.publishDir, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveEnvPath(t *testing.T) {
 	cases := []struct {
 		name    string

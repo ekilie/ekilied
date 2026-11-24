@@ -67,8 +67,20 @@ func createSite(ctx context.Context, out io.Writer, siteName string, params map[
 		port = 3000
 	}
 
-	logf("[site] writing nginx vhost for %s -> 127.0.0.1:%d...", domain, port)
-	cfg := generateSiteNginxConfig(siteName, domain, port)
+	staticSite, _ := params["static"].(bool)
+	var cfg string
+	if staticSite {
+		publishDir, _ := params["publish_dir"].(string)
+		root, err := staticRootPath(siteName, publishDir)
+		if err != nil {
+			return err
+		}
+		logf("[site] writing static nginx vhost for %s (root %s)...", domain, root)
+		cfg = generateStaticSiteNginxConfig(siteName, domain, root)
+	} else {
+		logf("[site] writing nginx vhost for %s -> 127.0.0.1:%d...", domain, port)
+		cfg = generateSiteNginxConfig(siteName, domain, port)
+	}
 	if err := writeNginxConfig(ctx, out, siteName, cfg); err != nil {
 		return fmt.Errorf("nginx: %w", err)
 	}

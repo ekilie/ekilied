@@ -117,3 +117,32 @@ func siteRepoPath(siteName string) (string, error) {
 	}
 	return filepath.Join(dir, "current"), nil
 }
+
+// staticRootPath resolves a static site's publish directory inside current/.
+// Publish dirs are always relative (dist, build, .output/public). Absolute
+// paths and parent traversal are rejected so nginx can never be pointed
+// outside the site checkout.
+func staticRootPath(siteName, publishDir string) (string, error) {
+	repoDir, err := siteRepoPath(siteName)
+	if err != nil {
+		return "", err
+	}
+	publishDir = strings.TrimSpace(publishDir)
+	if filepath.IsAbs(publishDir) {
+		return "", fmt.Errorf("invalid publish dir %q: must be relative to current", publishDir)
+	}
+	publishDir = strings.TrimPrefix(publishDir, "./")
+	publishDir = strings.Trim(publishDir, "/")
+	if publishDir == "" {
+		publishDir = "dist"
+	}
+	clean := filepath.Clean(publishDir)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid publish dir %q: must stay inside current", publishDir)
+	}
+	root := filepath.Join(repoDir, clean)
+	if !isContained(repoDir, root) {
+		return "", fmt.Errorf("publish dir %q escapes %s", publishDir, repoDir)
+	}
+	return root, nil
+}
