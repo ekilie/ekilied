@@ -437,6 +437,9 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 	case "site_delete":
 		writeLog("[site] deleting site %s...", siteName)
 		cleanupSupervisorForSite(siteName)
+		if err := removeNginxConfig(ctx, lb, siteName); err != nil {
+			writeLog("[site] warning: could not remove nginx config: %v", err)
+		}
 		execErr = removeSiteDir(siteName)
 
 	case "site_sync":
@@ -502,9 +505,18 @@ func (e *JobEngine) Execute(ctx context.Context, jobID uint, action string, para
 
 	case "ssl_issue":
 		domain, _ := params["domain"].(string)
-		email, _ := params["email"].(string)
 		writeLog("[ssl] issuing certificate for %s...", domain)
-		execErr = issueSSL(ctx, lb, domain, email)
+		sslResult, sslErr := issueSSL(ctx, lb, siteName, params)
+		if sslErr != nil {
+			execErr = sslErr
+			break
+		}
+		writeLog("[ssl] certificate issued and installed for %s", domain)
+		lb.flushNow()
+		if err := e.client.CompleteJob(ctx, jobID, "success", "", action, sslResult); err != nil {
+			log.Printf("complete job %d failed: %v", jobID, err)
+		}
+		return
 
 	case "ssh_key_add":
 		publicKey, _ := params["public_key"].(string)

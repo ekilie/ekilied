@@ -60,26 +60,18 @@ func createSite(ctx context.Context, out io.Writer, siteName string, params map[
 	if domain == "" {
 		domain = siteName + ".local"
 	}
-	// JSON numbers arrive as float64; default to 3000 when unset.
-	portF, _ := params["port"].(float64)
-	port := int(portF)
-	if port == 0 {
-		port = 3000
+	// Preserve HTTPS when an existing certificate matches the hostname. Any
+	// vhost rewrite (create, static toggle, publish dir change) would otherwise
+	// silently drop TLS.
+	withSSL := hasCertificate(domain)
+	cfg, err := siteVhostConfig(siteName, domain, params, withSSL)
+	if err != nil {
+		return err
 	}
-
-	staticSite, _ := params["static"].(bool)
-	var cfg string
-	if staticSite {
-		publishDir, _ := params["publish_dir"].(string)
-		root, err := staticRootPath(siteName, publishDir)
-		if err != nil {
-			return err
-		}
-		logf("[site] writing static nginx vhost for %s (root %s)...", domain, root)
-		cfg = generateStaticSiteNginxConfig(siteName, domain, root)
+	if withSSL {
+		logf("[site] writing nginx vhost for %s with an existing certificate...", domain)
 	} else {
-		logf("[site] writing nginx vhost for %s -> 127.0.0.1:%d...", domain, port)
-		cfg = generateSiteNginxConfig(siteName, domain, port)
+		logf("[site] writing nginx vhost for %s...", domain)
 	}
 	if err := writeNginxConfig(ctx, out, siteName, cfg); err != nil {
 		return fmt.Errorf("nginx: %w", err)

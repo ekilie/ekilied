@@ -27,6 +27,11 @@ var validSiteName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 // alphabet plus underscores.
 var validDaemonName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 
+// validDomain matches a lowercase DNS name. Certbot args are passed without a
+// shell, but validating first keeps stray values out of certificate paths and
+// nginx config.
+var validDomain = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
 // siteScopedActions operate on a site directory and require a valid site_name.
 var siteScopedActions = map[string]bool{
 	"site_create":       true,
@@ -65,6 +70,14 @@ func validateSiteName(siteName string) error {
 func validateDaemonName(name string) error {
 	if !validDaemonName.MatchString(name) {
 		return fmt.Errorf("invalid daemon name %q: must match %s", name, validDaemonName.String())
+	}
+	return nil
+}
+
+// validateDomain rejects values that are not plain lowercase DNS names.
+func validateDomain(domain string) error {
+	if len(domain) == 0 || len(domain) > 253 || !validDomain.MatchString(domain) {
+		return fmt.Errorf("invalid domain %q", domain)
 	}
 	return nil
 }
